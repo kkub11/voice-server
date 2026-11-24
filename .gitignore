@@ -1,0 +1,60 @@
+# Secrets — never commit these. Only the .example templates are tracked.
+.env
+parakeet-api/.env
+streaming-dictation/.env
+speaches/.env
+*.key
+*_key.txt
+omniroute_key.txt
+xai_api_key.txt
+
+# Voice recordings — the wsproxy session recorder writes 24 kHz mono
+# PCM16 WAVs of everything dictated. Private by definition.
+streaming-dictation/recordings/
+*.wav
+
+# Logs — wsproxy.log and friends can contain transcript text.
+*.log
+
+# Built image tarballs — transfer artifacts, not source. The
+# localai-custom.tar (~833 MB) is only for scp'ing a built image to
+# another host; delete it after `docker load -i`.
+*.tar
+*.tar.gz
+
+# Python bytecode / caches.
+__pycache__/
+*.pyc
+
+# LocalAI runtime data (named volumes hold the real state; the
+# models/ YAMLs and GGUFs are the tracked part). If you ever bind-mount
+# a local data dir, keep it out of git too.
+streaming-dictation/data/
+streaming-dictation/backends/
+streaming-dictation/configuration/
+
+# Downloaded model weights are large binaries and are owned by root
+# (the LocalAI/parakeet containers run as root and write them into
+# the mounted models/ dirs), so git cannot even read them — and
+# GitHub rejects any single file over 100 MB anyway. The model YAMLs
+# are tracked; the weights are fetched at install time by
+# `make models` / the curl commands in the README. Do not commit them.
+*.gguf
+*.onnx
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.nemo
+*.ckpt
+streaming-dictation/models/*/
+parakeet-api/models/
+speaches/models/
+
+# OS / editor noise.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/

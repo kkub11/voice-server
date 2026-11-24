@@ -1,0 +1,56 @@
+description: |
+    Qwen3 is the latest generation of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support, with the following key features:
+
+        Uniquely support of seamless switching between thinking mode (for complex logical reasoning, math, and coding) and non-thinking mode (for efficient, general-purpose dialogue) within single model, ensuring optimal performance across various scenarios.
+        Significantly enhancement in its reasoning capabilities, surpassing previous QwQ (in thinking mode) and Qwen2.5 instruct models (in non-thinking mode) on mathematics, code generation, and commonsense logical reasoning.
+        Superior human preference alignment, excelling in creative writing, role-playing, multi-turn dialogues, and instruction following, to deliver a more natural, engaging, and immersive conversational experience.
+        Expertise in agent capabilities, enabling precise integration with external tools in both thinking and unthinking modes and achieving leading performance among open-source models in complex agent-based tasks.
+        Support of 100+ languages and dialects with strong capabilities for multilingual instruction following and translation.
+
+    Qwen3-0.6B has the following features:
+
+        Type: Causal Language Models
+        Training Stage: Pretraining & Post-training
+        Number of Parameters: 0.6B
+        Number of Paramaters (Non-Embedding): 0.44B
+        Number of Layers: 28
+        Number of Attention Heads (GQA): 16 for Q and 8 for KV
+        Context Length: 32,768
+icon: https://cdn-avatars.huggingface.co/v1/production/uploads/620760a26e3b7210c2ff1943/-s1gyJfvbE1RgO5iBeNOi.png
+license: apache-2.0
+urls:
+    - https://huggingface.co/Qwen/Qwen3-0.6B
+    - https://huggingface.co/MaziyarPanahi/Qwen3-0.6B-GGUF
+name: qwen3
+config_file: |
+    backend: llama-cpp
+    known_usecases:
+        - chat
+    context_size: 8192
+    f16: true
+    mmap: true
+    stopwords:
+        - <|im_end|>
+        - <dummy32000>
+        - </s>
+        - <|endoftext|>
+    # Delegate templating to llama.cpp's jinja runtime so the C++ autoparser
+    # can classify <think>…</think> blocks into reasoning_content natively
+    # (issue #9985). Without use_jinja the autoparser falls back to a
+    # "pure content" PEG parser that leaks reasoning tags into content.
+    options:
+        - use_jinja:true
+    # With use_tokenizer_template the backend (llama.cpp) owns tool-call
+    # grammar generation and parsing too. Disabling LocalAI's own grammar lets
+    # llama.cpp's native name-first tool pipeline run; otherwise the generated
+    # grammar overrides it and the tool-call JSON leaks into content (#10052).
+    function:
+        grammar:
+            disable: true
+    template:
+        use_tokenizer_template: true
+files:
+    - filename: Qwen3-0.6B.Q4_K_M.gguf
+      sha256: dc4503da5d7cc7254055a86cd90e1a8c9d16c6ac71eb3a32b34bf48a1f4e0999
+      uri: huggingface://MaziyarPanahi/Qwen3-0.6B-GGUF/Qwen3-0.6B.Q4_K_M.gguf
+prompt_templates: []

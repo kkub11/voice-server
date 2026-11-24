@@ -1,0 +1,150 @@
+# voice-server — installer / orchestration Makefile
+#
+# This is the portable installer for the repo. It drives the Docker
+# Compose projects and the one host process (wsproxy.py) with plain
+# `make` targets. No root required, no distro-specific packaging.
+#
+# Why a Makefile and not a PKGBUILD (considered and rejected):
+# this is a Docker-based project, not a system package — its
+# deliverables are compose files, model YAMLs and a stdlib Python
+# script, not binaries to install into /usr. A PKGBUILD is
+# Arch-only; the reference host (odin) runs Ubuntu, and the
+# Makefile works the same on any Linux with Docker + Python 3.
+#
+# Usage:
+#   make help     # list targets (default)
+#   make env      # create parakeet-api/.env with a generated key
+#   make up       # start parakeet-api + LocalAI
+#   make models   # install LocalAI gallery models (localai must be up)
+#   make proxy    # start wsproxy.py on :8084 (Nemotron by default)
+#   make status   # containers + wsproxy state
+#
+# Override the streaming pipeline for the proxy, e.g.:
+#   make proxy WS_PROXY_MODEL=dictate-streaming-tdt
+
+PARAKEET_DIR  := parakeet-api
+STREAMING_DIR := streaming-dictation
+SPEACHES_DIR  := speaches
+
+# Default streaming pipeline. The proxy injects this as ?model= to
+# LocalAI, overriding whatever Dictate sends.
+WS_PROXY_MODEL ?= dictate-streaming-nemotron
+
+.PHONY: help env up up-speaches down down-speaches logs models proxy proxy-stop status check-docker
+
+help: ## Show this help (default target).
+	@echo "voice-server — free local Wispr Flow alternative"
+	@echo ""
+	@echo "Usage: make <target> [WS_PROXY_MODEL=<pipeline>]"
+	@echo ""
+	@echo "Setup:"
+	@echo "  env           Create $(PARAKEET_DIR)/.env from .env.example (generates an API key)"
+	@echo "  up            Start parakeet-api (:8816) and LocalAI (:8081)"
+	@echo "  up-speaches   Start speaches (:8001) — opt-in only, not part of 'up'"
+	@echo "  models        Install LocalAI gallery models + print manual Nemotron/PnC steps"
+	@echo "  proxy         Start wsproxy.py on :8084 (WS_PROXY_MODEL=$(WS_PROXY_MODEL))"
+	@echo ""
+	@echo "Day to day:"
+	@echo "  status        Show containers and whether wsproxy.py is running"
+	@echo "  logs          Follow localai + parakeet-api logs (Ctrl-C to stop)"
+	@echo "  proxy-stop    Stop wsproxy.py"
+	@echo "  down          Stop parakeet-api + LocalAI"
+	@echo "  down-speaches Stop speaches"
+	@echo ""
+	@echo "Streaming pipelines for 'make proxy WS_PROXY_MODEL=<name>':"
+	@echo "  dictate-streaming-nemotron  Nemotron 0.6B (recommended)"
+	@echo "  dictate-streaming           Parakeet EOU 120M"
+	@echo "  dictate-streaming-tdt       Parakeet TDT 0.6B v3"
+
+check-docker: ## Fail fast if docker / compose are missing.
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: 'docker' not found. Install Docker first."; exit 1; }
+	@docker compose version >/dev/null 2>&1 || { echo "ERROR: 'docker compose' (v2) not found. Install Docker Compose v2."; exit 1; }
+
+env: ## Create parakeet-api/.env from .env.example if missing (generates a key).
+	@if [ -f $(PARAKEET_DIR)/.env ]; then \
+		echo "$(PARAKEET_DIR)/.env already exists — leaving it alone."; \
+	else \
+		cp $(PARAKEET_DIR)/.env.example $(PARAKEET_DIR)/.env; \
+		if command -v openssl >/dev/null 2>&1; then \
+			KEY=$$(openssl rand -hex 24); \
+			sed -i "s/^SERVER__API_KEY=.*/SERVER__API_KEY=$$KEY/" $(PARAKEET_DIR)/.env; \
+			echo "Created $(PARAKEET_DIR)/.env with a generated API key."; \
+		else \
+			echo "Created $(PARAKEET_DIR)/.env, but openssl is missing —"; \
+			echo "edit SERVER__API_KEY in $(PARAKEET_DIR)/.env by hand."; \
+		fi; \
+	fi
+
+up: check-docker env ## Start parakeet-api (:8816) and LocalAI (:8081).
+	@cd $(PARAKEET_DIR) && docker compose up -d
+	@cd $(STREAMING_DIR) && docker compose up -d
+	@echo ""
+	@echo "Up. Next: 'make models' (first run), then 'make proxy'."
+
+up-speaches: check-docker ## Start speaches (:8001) — opt-in; NOT part of 'up'.
+	@if [ ! -d $(SPEACHES_DIR) ]; then \
+		echo "No $(SPEACHES_DIR)/ directory. Nothing to start."; exit 1; fi
+	@if [ ! -f $(SPEACHES_DIR)/docker-compose.yml ] && [ ! -f $(SPEACHES_DIR)/compose.yaml ]; then \
+		echo "No compose file in $(SPEACHES_DIR)/. Add one (see README) and retry."; exit 1; fi
+	@cd $(SPEACHES_DIR) && docker compose up -d
+	@echo "speaches up on :8001."
+
+down: ## Stop parakeet-api + LocalAI.
+	@cd $(PARAKEET_DIR) && docker compose down
+	@cd $(STREAMING_DIR) && docker compose down
+	@echo "Stopped parakeet-api and LocalAI. (wsproxy.py, if running, is separate: 'make proxy-stop'.)"
+
+down-speaches: ## Stop speaches.
+	@cd $(SPEACHES_DIR) && docker compose down
+
+logs: ## Follow localai + parakeet-api logs (Ctrl-C to stop).
+	@trap 'kill %1 %2 2>/dev/null' INT TERM; \
+	docker logs -f localai & \
+	docker logs -f parakeet-api & \
+	wait
+
+models: ## Install LocalAI gallery models; print manual Nemotron/PnC steps.
+	@echo "Installing LocalAI gallery models (container 'localai' must be up)..."
+	@docker exec localai /local-ai models install silero-vad-ggml
+	@docker exec localai /local-ai models install parakeet-cpp-realtime_eou_120m-v1
+	@docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v3
+	@docker exec localai /local-ai models install qwen3-0.6b
+	@echo ""
+	@echo "Gallery models done. Nemotron needs two manual downloads into"
+	@echo "$(STREAMING_DIR)/models/ (large files — not auto-fetched):"
+	@echo ""
+	@echo "  cd $(STREAMING_DIR)/models"
+	@echo "  curl -L -o nemotron-speech-streaming-en-0.6b.q8_0.gguf \\"
+	@echo "    https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/main/nemotron-speech-streaming-en-0.6b.q8_0.gguf"
+	@echo "  curl -L -o pnc-bert-base-en.q8_0.gguf \\"
+	@echo "    https://huggingface.co/suneetk/nemo-speech-companions/resolve/main/pnc-bert-base-en.q8_0.gguf"
+	@echo ""
+	@echo "Then install the nemo backend (once):"
+	@echo "  docker exec localai /local-ai backends install nemo-speech-cpp"
+	@echo ""
+	@echo "Note: the PnC BERT is attached but does not punctuate in"
+	@echo "practice for this model (see README, Nemotron section)."
+
+proxy: ## Start wsproxy.py on :8084 (WS_PROXY_MODEL=$(WS_PROXY_MODEL)).
+	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
+		echo "wsproxy.py is already running. 'make proxy-stop' first, or 'make status' to check."; \
+		exit 1; \
+	fi
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
+	@cd $(STREAMING_DIR) && WS_PROXY_MODEL=$(WS_PROXY_MODEL) nohup python3 wsproxy.py > wsproxy.log 2>&1 &
+	@sleep 1
+	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
+		echo "wsproxy.py up on :8084 with model $(WS_PROXY_MODEL). Log: $(STREAMING_DIR)/wsproxy.log"; \
+	else \
+		echo "wsproxy.py failed to start — see $(STREAMING_DIR)/wsproxy.log"; exit 1; \
+	fi
+
+proxy-stop: ## Stop wsproxy.py.
+	@pkill -f wsproxy.py 2>/dev/null && echo "wsproxy.py stopped." || echo "wsproxy.py was not running."
+
+status: ## Show containers + whether wsproxy.py is running.
+	@echo "== containers =="
+	@docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" --filter "name=localai" --filter "name=parakeet-api" --filter "name=speaches" 2>/dev/null || echo "(docker ps failed — is Docker running?)"
+	@echo ""
+	@echo "== wsproxy.py =="
+	@pgrep -af wsproxy.py 2>/dev/null || echo "wsproxy.py: not running (start with 'make proxy')"

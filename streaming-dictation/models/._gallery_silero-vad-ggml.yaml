@@ -1,0 +1,15 @@
+description: |
+    Silero VAD - pre-trained enterprise-grade Voice Activity Detector.
+icon: https://github.com/snakers4/silero-models/raw/master/files/silero_logo.jpg
+license: ""
+urls:
+    - https://github.com/snakers4/silero-vad
+    - https://github.com/ggml-org/whisper.cpp
+    - https://huggingface.co/ggml-org/whisper-vad
+name: virtual
+config_file: ""
+files:
+    - filename: ggml-silero-v5.1.2.bin
+      sha256: 29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf
+      uri: https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+prompt_templates: []

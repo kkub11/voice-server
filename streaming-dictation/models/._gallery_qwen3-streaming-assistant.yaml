@@ -1,0 +1,31 @@
+description: |
+    English voice assistant preset: Silero VAD, Parakeet TDT 0.6B v3, Qwen3
+    0.6B chat, and Qwen3-TTS 0.6B CustomVoice with Ryan's voice. Streams LLM
+    text into one persistent TTS session while audio is emitted.
+    This installs only the pipeline configuration. First install the separate
+    gallery models silero-vad-ggml, parakeet-cpp-tdt-0.6b-v3, qwen3-0.6b, and
+    qwen3-tts-cpp-customvoice. Pin its variant to qwen3-tts-cpp-customvoice
+    for Q8. WebRTC also needs the opus backend.
+    Requires a LocalAI build with incremental Qwen3-TTS input support.
+    CPU synthesis may be slower than playback; GPU and browser performance
+    are not established by this preset.
+icon: ""
+license: mit
+urls:
+    - https://github.com/localai-org/qwentts.cpp
+    - https://localai.io/features/openai-realtime/
+name: qwen3-streaming-assistant
+config_file: |
+    pipeline:
+        disable_thinking: true
+        llm: qwen3-0.6b
+        streaming:
+            llm: true
+            tts: true
+        transcription: parakeet-cpp-tdt-0.6b-v3
+        tts: qwen3-tts-cpp-customvoice
+        vad: silero-vad-ggml
+    tts:
+        voice: ryan
+files: []
+prompt_templates: []

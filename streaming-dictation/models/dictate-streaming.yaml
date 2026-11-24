@@ -1,0 +1,36 @@
+# Streaming dictation pipeline for Dictate's real-time mode.
+# Copy this file into the ./models/ folder next to docker-compose.yml
+# BEFORE starting LocalAI — LocalAI picks up *.yaml in the models dir
+# as a model named "dictate-streaming".
+#
+# What it is: Silero VAD + Parakeet realtime_eou 120M (the streaming
+# model — it emits an end-of-utterance token and live transcript deltas)
+# with semantic_vad turn detection, so a mid-thought pause does NOT end
+# the turn. The LLM (Qwen3 0.6B) is in the pipeline because LocalAI's
+# docs show all four stages in every example — it is loaded but idle in
+# a transcription-only session; nothing is generated or spoken.
+# There is deliberately NO tts stage: the qwen3-tts-cpp-customvoice
+# backend crashes on load (process exits, "error reading from server:
+# EOF"), and LocalAI's session warmup loads every configured stage and
+# fails the whole session if any one of them fails — so the TTS stage
+# alone was killing every realtime session (2026-11-15 22:51 PST).
+# A transcription-only session needs no TTS, so it is left out.
+# eagerness high = 2 s fallback silence window if the model misses the
+# end-of-utterance token (medium was 4 s); after the token, the turn
+# commits in ~300 ms. High also shrinks LocalAI's per-tick VAD scan
+# window (eagerness + margin), which matters on this CPU: at medium
+# each Silero pass over the 5 s window took 3-4 s of wall time
+# (2026-11-15 debug log), so the whole turn loop ran at ~0.3 Hz and no
+# live word ever completed inside a ~10 s dictation.
+
+name: dictate-streaming
+pipeline:
+  vad: silero-vad-ggml
+  transcription: parakeet-cpp-realtime_eou_120m-v1
+  llm: qwen3-0.6b
+  streaming:
+    transcription: true
+  turn_detection:
+    type: semantic_vad
+    eagerness: high
+    retranscribe: false

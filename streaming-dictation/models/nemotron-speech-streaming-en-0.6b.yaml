@@ -1,0 +1,39 @@
+# NVIDIA Nemotron Speech Streaming EN 0.6B — model file for LocalAI.
+# The streaming model that punctuates: unlike the Parakeet EOU 120M
+# model (which NVIDIA documents as NOT supporting punctuation or
+# capitalization), Nemotron streaming supports both natively, and is
+# more accurate (6.93% WER at 1.12 s lookahead vs EOU's 9.30%).
+# Backend: nemo-speech-cpp (NeMo-Speech.cpp, NVIDIA's C++/ggml runtime).
+# The backend implements the same AudioTranscriptionLive RPC as
+# parakeet-cpp, so LocalAI's realtime live path works with it.
+# The ready-made GGUF is published on Hugging Face alongside the
+# NVIDIA checkpoint — download it into ./models/ (see README).
+# This file must be copied into ./models/ next to the GGUF, and the
+# backend installed first (docker exec localai /local-ai backends
+# install nemo-speech-cpp). LocalAI never picks this backend
+# automatically — the backend: line below is what selects it.
+
+name: nemotron-speech-streaming-en-0.6b
+backend: nemo-speech-cpp
+parameters:
+  model: nemotron-speech-streaming-en-0.6b.q8_0.gguf
+known_usecases:
+  - FLAG_TRANSCRIPT
+options:
+  - language_code:en-US
+  # Punctuation + capitalization: the ASR model emits raw lowercase
+  # text; the PnC BERT restores `. , ?` and casing on the final
+  # transcript (NeMo-Speech.cpp postprocessing: profanity -> ITN ->
+  # PnC). Without this line there is no punctuation at all -- verified
+  # 2026-11-16: Nemotron streamed "well so i changed some stuff but
+  # not the yaml" with no punctuation anywhere. File (139 MB) from
+  # suneetk/nemo-speech-companions on Hugging Face (NVIDIA's
+  # punctuation_en_bert.nemo, converted); download into ./models/:
+  #   curl -L -o pnc-bert-base-en.q8_0.gguf \
+  #     https://huggingface.co/suneetk/nemo-speech-companions/resolve/main/pnc-bert-base-en.q8_0.gguf
+  # NOTE: postprocessing runs on the FINAL transcript, so the live
+  # deltas may stay unpunctuated while the `completed` text (and the
+  # text Dictate lands from finalized turns) gains punctuation --
+  # check wsproxy.log's "UPSTREAM completed:" lines to see which.
+  - pnc_model:pnc-bert-base-en.q8_0.gguf
+  # gpu omitted -> CPU (default -1). Odin has no GPU for this.

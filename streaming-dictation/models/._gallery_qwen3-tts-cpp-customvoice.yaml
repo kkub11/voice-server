@@ -1,0 +1,23 @@
+description: |
+    Qwen3-TTS 0.6B CustomVoice (C++ / GGML, qwentts.cpp), Q8_0. Named speakers
+    selected via the `voice` field: serena, vivian, uncle_fu, ryan, aiden,
+    ono_anna, sohee, eric (sichuan dialect), dylan (beijing dialect). Streaming,
+    24kHz mono, 11 languages.
+icon: https://huggingface.co/avatars/c299494fd1e72375832499c75b3425d6.svg
+license: mit
+urls:
+    - https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF
+    - https://github.com/ServeurpersoCom/qwentts.cpp
+name: qwen3-tts-cpp-customvoice
+config_file: ""
+files:
+    - filename: qwen3-tts-cpp-customvoice/qwen-talker-0.6b-customvoice-Q8_0.gguf
+      sha256: 4eb38675c736ed6ac72012846ac8d6ef80e5af8bc05726870f0b3a6569588519
+      uri: huggingface://Serveurperso/Qwen3-TTS-GGUF/qwen-talker-0.6b-customvoice-Q8_0.gguf
+    - filename: qwen3-tts-cpp-customvoice/qwen-tokenizer-12hz-Q8_0.gguf
+      sha256: 1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94
+      uri: huggingface://Serveurperso/Qwen3-TTS-GGUF/qwen-tokenizer-12hz-Q8_0.gguf
+prompt_templates: []
+entry_name: qwen3-tts-cpp-customvoice
+resolved_variant: qwen3-tts-cpp-customvoice
+pinned_variant: qwen3-tts-cpp-customvoice

@@ -1,0 +1,38 @@
+# Streaming dictation pipeline, Nemotron variant — the punctuation fix.
+# Same shape as dictate-streaming.yaml, but the transcription model is
+# NVIDIA Nemotron Speech Streaming EN 0.6B instead of Parakeet EOU 120M.
+# Nemotron punctuates and capitalizes natively (NVIDIA's own NeMo
+# voice-agent README: EOU "does not support punctuation and
+# capitalization"; Nemotron "supports punctuation and capitalization"),
+# and is more accurate (6.93% WER at 1.12 s lookahead vs 9.30%).
+#
+# Two behaviour differences vs the EOU pipeline, both verified in
+# LocalAI's source/docs (2026-11-16):
+# 1. No EOU token: Nemotron does not predict end-of-utterance, so
+#    semantic_vad commits a turn on the eagerness silence window
+#    instead (2 s on high). Dictate still holds the dictation open
+#    until YOU stop it — silence never ends it; the turn commit only
+#    finalizes the text of that chunk.
+# 2. Deltas arrive per FINALIZED utterance, not word-by-word
+#    mid-utterance: the nemo-speech-cpp backend deliberately drops
+#    interim hypotheses (its doc: forwarding interims would assemble
+#    "he", "hell", "hello", "Hello." into "hehellhelloHello."). So the
+#    visible text lands as punctuated sentences at utterance ends
+#    rather than as a live word stream. For dictation that is arguably
+#    the better feel — and the landed text is punctuated.
+# The LLM (Qwen3 0.6B) is in the pipeline because LocalAI's examples
+# show all four stages; it is loaded but idle in a transcription-only
+# session. There is deliberately NO tts stage (qwen3-tts-cpp-customvoice
+# crashes on load and fails realtime warmup — see dictate-streaming.yaml).
+
+name: dictate-streaming-nemotron
+pipeline:
+  vad: silero-vad-ggml
+  transcription: nemotron-speech-streaming-en-0.6b
+  llm: qwen3-0.6b
+  streaming:
+    transcription: true
+  turn_detection:
+    type: semantic_vad
+    eagerness: high
+    retranscribe: false

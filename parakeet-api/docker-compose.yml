@@ -1,0 +1,32 @@
+# Parakeet STT server for odin (Dell OptiPlex 5060 SFF, i7-8700, CPU-only)
+# OpenAI-compatible transcription API on port 8816, powered by
+# sherpa-onnx + NVIDIA Parakeet TDT 0.6B (int8) via parakeet-api.
+# Docs: https://pypi.org/project/parakeet-api/
+services:
+  api:
+    image: ghcr.io/likeablob/parakeet-api:latest
+    container_name: parakeet-api
+    ports:
+      - "8816:8816"
+    env_file:
+      - .env
+    volumes:
+      - type: bind
+        source: ./models
+        target: /app/models
+    environment:
+      - SERVER__HOST=0.0.0.0
+      - SERVER__PORT=8816
+      - STT__MODELS_DIR=/app/models
+    # Frigate guardrails: odin has 6 cores / 12 threads and Frigate + OpenVINO
+    # own the iGPU. Cap the STT container so a long dictation cannot starve
+    # Frigate's CPU-side work (decoding, motion, events). Raise to 6.0 only
+    # if the benchmark in README.md shows Frigate has headroom to spare.
+    cpus: "4.0"
+    mem_limit: "4g"
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

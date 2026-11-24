@@ -1,0 +1,11 @@
+backend: qwen3-tts-cpp
+known_usecases:
+    - tts
+name: qwen3-tts-cpp-customvoice
+parameters:
+    min_p: 0
+    model: qwen3-tts-cpp-customvoice/qwen-talker-0.6b-customvoice-Q8_0.gguf
+    repeat_penalty: 1
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95

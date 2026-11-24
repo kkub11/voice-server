@@ -1,0 +1,30 @@
+# Pipeline A: punctuated turns, no live words.
+#
+# Parakeet TDT 0.6B v3 is a SELF-PUNCTUATING model (its vocab carries
+# sentence-terminator tokens), so it emits ".", "?" and capitals
+# natively -- no PnC model needed, and the runtime correctly skips
+# PnC for it. But it is an OFFLINE transducer: it has no live
+# decode, so under server_vad each VAD-committed turn is transcribed
+# as a whole and the text appears at the pause, not word-by-word.
+# That is the trade against the Nemotron pipeline (live words, no
+# punctuation): this one gives verbatim words WITH punctuation, at
+# the cost of the live feel. The dictation itself still stays open
+# until YOU stop it -- a pause only ends a turn, never the session.
+# No TTS stage: qwen3-tts-cpp-customvoice crashes on load and the
+# warmup fails the whole session if any stage fails (2026-11-15).
+#
+# To try it: WS_PROXY_MODEL=dictate-streaming-tdt when relaunching
+# wsproxy.py. Dictate needs no change. The proxy's close-on-commit
+# works the same here (turns commit at pauses, so a stop after a
+# pause lands instantly).
+name: dictate-streaming-tdt
+pipeline:
+  vad: silero-vad-ggml
+  transcription: parakeet-cpp-tdt-0.6b-v3
+  llm: qwen3-0.6b
+  streaming:
+    transcription: true
+  turn_detection:
+    type: server_vad
+    # Silence window is the pipeline default; a mid-thought pause
+    # only splits the text into turns, it never ends the dictation.

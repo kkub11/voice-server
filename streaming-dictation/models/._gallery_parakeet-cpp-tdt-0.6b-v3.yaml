@@ -1,0 +1,15 @@
+description: |
+    TDT FastConformer, 0.6B (v3, multilingual). F16 GGUF for the parakeet-cpp backend (C++/ggml port of NVIDIA NeMo Parakeet),
+    byte-identical to NeMo at WER 0. Faster than NeMo on CPU and GPU.
+icon: ""
+license: cc-by-4.0
+urls:
+    - https://huggingface.co/mudler/parakeet-cpp-gguf
+    - https://github.com/mudler/parakeet.cpp
+name: virtual
+config_file: ""
+files:
+    - filename: parakeet-cpp/tdt-0.6b-v3-f16.gguf
+      sha256: 8ba47343e1e919895aca90e099150a01ed203ee0942d8ed31e27295efc5abb22
+      uri: huggingface://mudler/parakeet-cpp-gguf/tdt-0.6b-v3-f16.gguf
+prompt_templates: []

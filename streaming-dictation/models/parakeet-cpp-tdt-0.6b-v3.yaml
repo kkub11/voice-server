@@ -1,0 +1,6 @@
+backend: parakeet-cpp
+known_usecases:
+    - transcript
+name: parakeet-cpp-tdt-0.6b-v3
+parameters:
+    model: parakeet-cpp/tdt-0.6b-v3-f16.gguf
