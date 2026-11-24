@@ -1,51 +1,36 @@
 # voice-server
 
-A free, local, open-source alternative to Wispr Flow. Three
-self-hosted speech-to-text servers on one box, plus a small proxy
-that makes live streaming dictation work with the Dictate keyboard
-app on Android. Your audio never leaves your network.
+Your own self-hosted STT (speech-to-text) server
 
-Wispr Flow was great — until the free tier ran out and the shared
-server kept timing out. This is the replacement: it runs on a home
-server (here, a Dell OptiPlex i7-8700, CPU-only, 14 GB RAM), costs
-nothing per minute, and in several ways works better than the cloud
-service did — text appears while you speak, and a pause while you
-think never ends the dictation.
+## Inspiration
 
-## Layout
+Speaking is faster than typing, especially on a smartphone, but dang, it's frustrating when it makes mistakes. Then Wispr Flow came along, and wow, it was fast AND accurate. But then... I hit the free usage limit... and it kept timing out (Maybe it was a victim of its own success and the resultant overloaded server?).
 
-```
-voice-server/
-├── README.md                  # this file
-├── Makefile                   # installer / orchestration (see below)
-├── .gitignore
-├── parakeet-api/              # batch STT — port 8816
-│   ├── docker-compose.yml
-│   ├── .env.example           # copy to .env (make env does this)
-│   └── test-transcribe.sh
-├── streaming-dictation/       # realtime STT — LocalAI :8081 + wsproxy :8084
-│   ├── docker-compose.yml
-│   ├── wsproxy.py             # stdlib-only proxy between Dictate and LocalAI
-│   ├── models/                # LocalAI model + pipeline YAMLs
-│   ├── localai-fix-empty-completed-pnc.patch   # optional, see below
-│   └── localai-issue-draft.md # upstream issue text (filed as #13438)
-└── speaches/                  # Whisper STT — port 8001 (retired, kept as an option)
-```
+Could I make my own free, private, local, and open-source version?
 
-All three services are Docker Compose projects. `wsproxy.py` is the
-only host process (plain Python 3, stdlib only, no pip packages).
+Answer: Yes!
+
+And in many ways, it's even better than Wispr Flow.
+
+## Features
+
+- Fast, accurate voice transcription on your phone.
+- Live-streaming text. See the text as you speak. Edit it on the fly.
+- Your own server: less downtime (we hope).
+- Private. Nothing leaves your local network.
 
 ## Prerequisites
 
-- Docker + Docker Compose (v2) on the host.
-- Python 3 on the host, for `wsproxy.py` (stdlib only).
+- Docker + Docker Compose (v2)
+- Python 3
 - `openssl` (optional, used by `make env` to generate the API key).
-- A LAN IP for the host — Dictate and the other clients point at it.
-  Everything here is **LAN-only by design. Do not port-forward any
-  of these ports.** Away from home, reach the host over
-  Tailscale/WireGuard.
+- A LAN IP for the host
 
 ## Quick start
+
+### Step 1 - Setup the host (your local server or VPS)
+
+Run these in order:
 
 ```bash
 make env      # create parakeet-api/.env with a generated API key
@@ -55,23 +40,55 @@ make proxy    # start wsproxy.py on :8084 (default model: dictate-streaming-nemo
 make status   # show containers + whether wsproxy is running
 ```
 
-Then point Dictate at the services (see "Dictate setup" below).
-`make help` lists every target, including `down`, `logs`,
-`proxy-stop`, and the opt-in `up-speaches`.
+(Note: Use `make help` for the full list of commands, including `down`, `logs`, `proxy-stop`, and the opt-in `up-speaches`.)
 
-> The `localai-custom.tar` image tarball (~833 MB) is a transfer
-> artifact from building a patched image on another machine. It is
-> gitignored. Once the image is loaded (`docker load -i
-> localai-custom.tar`) you can delete the file.
+### Step 2 - Setup your client
 
-## The three services
+To use the default (streaming dictation using Nemotron), point your client's streaming provider base URL at the proxy:
+
+```
+http://<local-server-ip>:8084/v1/
+```
+
+I use Dictate Keyboard as my client on my Android phone. It's like Wispr Flow but better!
+
+#### Setup for Dictate Keyboard
+
+1. Install Dictate Keyboard on your Android device
+2. Select **Dictate -> AI Providers -> Add a Provider -> Add your own server** from the menu
+3. Name it (e.g. "streaming-nemotron")
+4. Put in the base URL above (http://<local-server-ip>:8084/v1/ )
+5. For "Transcription model," enter: `parakeet-cpp-tdt-0.6b-v3`
+6. Hit "Test Connection" and "Test transcription" to see if it works
+7. Turn "Real-time streaming" on
+8. A box for "Real-time model" will appear, but it's unused. You can leave it blank.
+9. Leave all other settings blank or default (off).
+10. Hit "Ok" to save.
+11. Back in **AI providers** set "Transcription" to the provider you just created.
+12. Optional: set "Rewording" to another provider (make it the same way as above). This enables Dictate Keyboard's "Fix Grammar," "Improve Writing," and other functions. I've set mine to a free Omniroute combo, but you could also put an OpenRouter, OpenAI, Anthropic, etc base URL and API key.
+13. Go up one level in the menu system (i.e. back to **Dictate**) and select **Recording**.
+14. Set "Real-time transcription" to "Show the text while I speak."
+15. Test it: touch inside the bottom "Try out your setup" textbox and make sure the keyboard that pops up is Dictate. Hit the microphone icon and start dictating. Text should appear as you speak.
+16. Optional: Select **Floating dictation button** in the **Dictate** menu to turn it on. Now there will be a floating button like Wispr Flow which lets you dictate from another keyboard, albeit without streaming text.
+
+## Alternate Setup Options
+
+In addition to streaming dictation using Nemotron, there are other options, each with different pros and cons.
 
 ### 1. parakeet-api — batch transcription, port 8816
 
-Dictate without seeing the text as you speak; hit stop and the whole
-recording is transcribed in one batch. Also the automatic fallback:
-when a realtime turn fails, Dictate re-transcribes the saved WAV
-through this endpoint.
+**Pros:**
+
+- Highly accurate: around 6% WER (word error rate), comparable to Wispr Flow in my experience.
+- **Automatic punctuation and capitalization.** This is the only
+  path in this repo that punctuates reliably.
+- Fast (with the caveat that processing only occurs *afterwards*, not while you're speaking). That said, even on CPU: a 10 s clip took ~1–2 s on my system (8th gen Intel system with no GPU).
+
+**Cons:**
+
+- No live streaming. You hit the button, speak, and then the audio is sent in a batch, processed, and comes back as text.
+
+** More info:**
 
 - Model: **NVIDIA Parakeet TDT 0.6B** (int8, via sherpa-onnx).
   Default is v3 (25 European languages, ~6.32% average WER on the
@@ -80,24 +97,30 @@ through this endpoint.
   `STT__SHERPA__MODEL_ID=sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8`
   in `parakeet-api/.env` and download v2 into `parakeet-api/models/`
   (see that folder's README notes).
-- **Automatic punctuation and capitalization.** This is the only
-  path in this repo that punctuates reliably.
-- Fast, even on CPU: a 10 s clip comes back in ~1–2 s on the
-  reference box. Test it with `parakeet-api/test-transcribe.sh
-  sample.wav`.
+
+- In addition to being one of the choices of a transcription provider in Dicate Keyboard, it also functions as the automatic fallback for the live streaming dictation option below.
+
+- Test it with `parakeet-api/test-transcribe.sh sample.wav`.
+
 - API: OpenAI Whisper-compatible `POST /v1/audio/transcriptions`,
   optional Bearer API key. `/v1/audio/transcriptions/raw` also
   accepts raw audio bytes. The model name in the request is
   accepted and ignored in favour of the loaded Parakeet model.
 
-**Pros:** fastest accurate option here; punctuates; the reliable
-fallback when streaming fails. **Cons:** no live words — you only
-see the text after you stop.
-
 ### 2. streaming-dictation — live transcription, LocalAI :8081 + wsproxy :8084
 
-Text appears **as you speak**. A pause while thinking does not end
-the dictation — silence is never the send signal.
+Fast AND accurate.
+
+Text appears **as you speak**.
+
+A pause while thinking doesn't end the dictation.
+
+This is what I use because, not only do I like to see the text appear as I speak (and edit it as I go!), it's faster because it's processing while I'm still speaking. The above parakeet option only processes at the end.
+
+**Downsides:**
+
+- It doesn't punctuate or capitalize reliably (or at all). Yet. (See below.)
+- Sometimes a few seconds of speech gets lost. (Also see below.)
 
 LocalAI (v4.12.1) runs three pipelines; pick one with
 `WS_PROXY_MODEL` when starting the proxy:
@@ -154,11 +177,11 @@ default in `docker-compose.yml`.
 
 #### wsproxy.py
 
-Streaming dictation only works because of `wsproxy.py`, a small
-stdlib-only proxy (no pip packages) that sits between Dictate and
-LocalAI on host port **8084**.
+TL;DR: Turn on the proxy with `make proxy` (it's already in the Quick-Start above). That's it. It's needed to connect LocalAI to Dictate Keyboard to make live-streaming dictation actually work.
 
-What it does:
+`wsproxy.py` is a small stdlib-only proxy (no pip packages) that sits between Dictate and LocalAI on host port **8084**. It's needed because LocalAI and the models don't seem to work together out of the box, so certain workarounds are required to get live-streaming to actually happen.
+
+Technical info (what it actually does under-the-hood):
 
 - Injects `?model=<pipeline>` (from `WS_PROXY_MODEL`) so LocalAI
   uses the chosen pipeline.
@@ -181,6 +204,18 @@ What it does:
 
 Setup — run it on the host, from `~/voice-server/streaming-dictation/`:
 
+##### Automatic Way (Recommended)
+
+Use `make`:
+
+`make proxy`
+
+This turns it on (default model: Nemotron (the one I use and like the best)).
+
+Use `make proxy-stop` if you need to kill it.
+
+##### Manual Way
+
 ```bash
 pkill -f wsproxy.py   # kill first if already running
 WS_PROXY_MODEL=dictate-streaming-nemotron nohup python3 wsproxy.py > wsproxy.log 2>&1 &
@@ -188,16 +223,11 @@ WS_PROXY_MODEL=dictate-streaming-nemotron nohup python3 wsproxy.py > wsproxy.log
 # or: WS_PROXY_MODEL=dictate-streaming-tdt nohup python3 wsproxy.py > wsproxy.log 2>&1 &
 ```
 
-(`make proxy` does the same thing; `make proxy-stop` kills it.)
-Then point Dictate's streaming provider base URL at the proxy:
-
-```
-http://<odin-LAN-IP>:8084/v1/
-```
-
 Debugging: see `wsproxy.log`. Raw recordings are in `recordings/`.
 
-### 3. speaches — Whisper STT, port 8001 (retired, kept as an option)
+Note: since this project is still experimental and under-development, the log and saved audio help. Manually clear them out to save hard-drive space.
+
+### 3. speaches — Whisper STT, port 8001
 
 Speaches (formerly faster-whisper-server) is an OpenAI-compatible
 STT **and** TTS server built on faster-whisper. It is in this repo
@@ -221,36 +251,29 @@ use `make up-speaches` if you want it.
 
 **Cons:**
 
-- **Slower on CPU than Parakeet.** That is why it was retired
-  here: on this CPU-only box the Whisper models are noticeably
-  slower than Parakeet TDT for the same job, and the batch path
-  above is both faster and more accurate for English. On a GPU
-  box the gap narrows, and the multilingual/TTS features may be
-  worth it.
+- **Slower on CPU than Parakeet.** This is why I decided not to use it. It's just too slow. The batch Parakeet TDT above is both faster and more accurate for English. With a GPU, it might be fast enough, and the multilingual/TTS features may become worth it.
 
-## Dictate setup (Android)
+## General Dictate Keyboard setup (Android)
 
 Add the services as providers in Dictate's Settings, and use
 Dictate as the keyboard on your phone. A Wispr Flow-like floating
 button is available too.
 
-- **Batch provider** ("odin"): custom server, base URL
+- **Batch provider**: use base URL
   `http://<odin-LAN-IP>:8816/v1`, API key from
   `parakeet-api/.env`. ("Test connection" returning
   `{"detail":"Not Found"}` is a red herring; "Test transcription"
   is the real check.)
-- **Streaming provider** ("odin-streaming"): custom server, base
-  URL `http://<odin-LAN-IP>:8084/v1/`, real-time streaming ON,
-  real-time model `dictate-streaming-nemotron` (the proxy overrides
-  this with `WS_PROXY_MODEL` anyway). Live word-by-word text only
-  appears when Dictate itself is the active keyboard — with the
-  floating button over another keyboard, live text is deliberately
-  held back (Dictate issue #456).
+- **Streaming provider**: see above Quick-Start Step 2 to use Nemotron. There are two other streaming dictation options: TDT and EOU. See above for how to set them with an environment variable to wsproxy.py. Note: live text only works with Dictate Keyboard's keyboard. It's deliberately
+  held back (Dictate issue #456) with the floating button and other system keyboards.
+
+### Optional: Add Rewording support to Dictate Keyboard
+
 - **Rewording provider** (for the "Fix Grammar" etc. buttons):
   add a *separate* custom provider pointing at an OpenAI-compatible
-  **chat** endpoint — here, OmniRoute on the same host:
-  base URL `http://<odin-LAN-IP>:20128/v1`, model `general`, your
-  OmniRoute client key. `general` is a free chain (Gemini 3 Flash
+  **chat** endpoint (not these voice transcription models). I use OmniRoute on the same host:
+  base URL `http://<my-server-ip>:20128/v1`, model `general`, 
+  OmniRoute client key made in the OmniRoute webui. I made a `general` combo of free models (Gemini 3 Flash
   Preview → Groq GPT-OSS 120B → NVIDIA GPT-OSS 20B → Kiro
   DeepSeek 3.2 → Z.ai GLM 4.7 Flash → Cloudflare Llama 3.3 70B →
   Gemini 3.1 Flash Lite → Nemotron Ultra). Then select it in
@@ -318,3 +341,26 @@ streaming does not.**
   container (an old pre-wsproxy nginx proxy on :8083), it is safe
   to remove with `docker compose up -d --remove-orphans` in
   `streaming-dictation/`.
+
+## Layout
+
+```
+voice-server/
+├── README.md                  # this file
+├── Makefile                   # installer / orchestration (see below)
+├── .gitignore
+├── parakeet-api/              # batch STT — port 8816
+│   ├── docker-compose.yml
+│   ├── .env.example           # copy to .env (make env does this)
+│   └── test-transcribe.sh
+├── streaming-dictation/       # realtime STT — LocalAI :8081 + wsproxy :8084
+│   ├── docker-compose.yml
+│   ├── wsproxy.py             # stdlib-only proxy between Dictate and LocalAI
+│   ├── models/                # LocalAI model + pipeline YAMLs
+│   ├── localai-fix-empty-completed-pnc.patch   # optional, see below
+│   └── localai-issue-draft.md # upstream issue text (filed as #13438)
+└── speaches/                  # Whisper STT — port 8001 (retired, kept as an option)
+```
+
+All three services are Docker Compose projects. `wsproxy.py` is the
+only host process (plain Python 3, stdlib only, no pip packages).
