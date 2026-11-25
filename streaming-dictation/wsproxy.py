@@ -706,8 +706,8 @@ def handle_ws(client_sock, headers):
         except OSError:
             pass
         return
-    log("WS connected: Dictate <-> LocalAI "
-        f"({chosen_model}@{up_host}:{up_port})")
+    log("WS session model: Dictate field="
+        f"{field_model!r}; using {chosen_model!r}@{up_host}:{up_port}")
     session_state = {"event_seq": 0, "first_delta_logged": False,
                      "turn_completed": False, "awaiting_completed": False,
                      "close_sent": False}
@@ -934,8 +934,8 @@ def main():
     srv.bind((LISTEN_HOST, LISTEN_PORT))
     srv.listen(32)
     log(f"dictate-wsproxy listening on {LISTEN_HOST}:{LISTEN_PORT} "
-        f"-> upstream {UPSTREAM_HOST}:{UPSTREAM_PORT} (model={MODEL})"
-        + (f" [failover: {', '.join(f'{m}@{h}:{p}' for m, h, p in failover_candidates())}, "
+        f"-> upstream {UPSTREAM_HOST}:{UPSTREAM_PORT}"
+        + (f" [candidates: {', '.join(f'{m}@{h}:{p}' for m, h, p in failover_candidates())}, "
            f"timeout {FAILOVER_TIMEOUT:g}s]"))
     try:
         while True:
