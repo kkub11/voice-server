@@ -1,35 +1,7 @@
-# LocalAI — streaming transcription test server (odin)
-# Copy this folder to odin next to the parakeet-api folder, then:
-#   docker compose up -d
-#   docker exec localai /local-ai models install silero-vad-ggml
-#   docker exec localai /local-ai models install parakeet-cpp-realtime_eou_120m-v1
-#   docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v3
-#   docker exec localai /local-ai models install qwen3-0.6b
-#   docker exec localai /local-ai models install qwen3-tts-cpp-customvoice --variant qwen3-tts-cpp-customvoice
-#   docker exec localai /local-ai models install qwen3-streaming-assistant
-# (NOTE: the binary is /local-ai, not on PATH — "local-ai" alone fails.
-#  Or install the same six from the web UI at http://192.168.1.137:8081 → Models.)
-# See README.md for the Dictate test. Batch parakeet-api on :8816 is untouched.
-# LAN-only — never port-forward 8081 or 8084.
-# NOTE: host port is 8081, not 8080 — odin already has a root python3
-# process listening on 127.0.0.1:8080 (pid 5765; SABnzbd, confirmed
-# 2026-11-15, installed with the initial Ubuntu Server setup, not used).
-# The container still listens on 8080 internally.
-# NOTE 2: Dictate must point at the wsproxy on host port 8084, not at
-# LocalAI on 8081 — the wsproxy (wsproxy.py, run on the host with
-# nohup) strips turn_detection:null from Dictate's session.update,
-# drops LocalAI's not_implemented error on the stop-commit, rewrites
-# event_ids, and closes the session at once when the turn already
-# completed. Direct :8081 works for batch only. The old nginx proxy
-# on :8083 was removed 2026-11-16 (superseded by wsproxy); if it is
-# still running on odin, `docker compose down --remove-orphans`
-# takes it out, and nginx.conf can be deleted.
-# Backends/config/data live in named volumes so they survive recreates
-# (the image only persists what is mounted — ./models alone is not enough).
-
+# LocalAI — streaming transcription test server
 services:
   localai:
-    image: localai:custom
+    image: localai/localai:latest
     container_name: localai
     # cpus raised 3.0 -> 4.0 (2026-11-15): the debug log showed each
     # Silero VAD pass taking 3-4 s and the live decode ~1 s behind
