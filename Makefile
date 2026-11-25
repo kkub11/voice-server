@@ -137,28 +137,28 @@ models: ## Install LocalAI gallery models; print manual Nemotron/PnC steps.
 	@echo "practice for this model (see README, Nemotron section)."
 
 proxy: ## Start wsproxy.py on :8084 (one candidate list).
-	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
+	@if pgrep -f '(^|/)python3 .*wsproxy\.py' >/dev/null 2>&1; then \
 		echo "wsproxy.py is already running. 'make proxy-stop' first, or 'make status' to check."; \
 		exit 1; \
 	fi
 	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
 	@cd $(STREAMING_DIR) && WS_PROXY_FAILOVER="$(WS_PROXY_FAILOVER)" nohup python3 wsproxy.py > wsproxy.log 2>&1 &
 	@sleep 1
-	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
+	@if pgrep -f '(^|/)python3 .*wsproxy\.py' >/dev/null 2>&1; then \
 		echo "wsproxy.py up on :8084. Log: $(STREAMING_DIR)/wsproxy.log"; \
 	else \
 		echo "wsproxy.py failed to start — see $(STREAMING_DIR)/wsproxy.log"; exit 1; \
 	fi
 
 proxy-stop: ## Stop wsproxy.py.
-	@pkill -f wsproxy.py 2>/dev/null && echo "wsproxy.py stopped." || echo "wsproxy.py was not running."
+	@pkill -f '(^|/)python3 .*wsproxy\.py' 2>/dev/null && echo "wsproxy.py stopped." || echo "wsproxy.py was not running."
 
 status: ## Show containers + whether wsproxy.py is running.
 	@echo "== containers =="
 	@docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" --filter "name=localai" --filter "name=parakeet-api" --filter "name=speaches" 2>/dev/null || echo "(docker ps failed — is Docker running?)"
 	@echo ""
 	@echo "== wsproxy.py =="
-	@pgrep -af wsproxy.py 2>/dev/null || echo "wsproxy.py: not running (start with 'make proxy')"
+	@pgrep -af '(^|/)python3 .*wsproxy\.py' 2>/dev/null || echo "wsproxy.py: not running (start with 'make proxy')"
 
 # --- Second server: fast remote (GPU) ----------------------------------
 # up-gpu / down-gpu / models-gpu run ON THE GPU MACHINE (a laptop with
@@ -193,11 +193,11 @@ models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must
 	@echo "  docker exec localai /local-ai backends install nemo-speech-cpp"
 
 proxy-failover: ## Restart wsproxy on :8084 (same one candidate list). Run ON the main local server.
-	@pkill -f wsproxy.py 2>/dev/null; sleep 1
+	@pkill -f '(^|/)python3 .*wsproxy\.py' 2>/dev/null; sleep 1
 	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
 	@cd $(STREAMING_DIR) && WS_PROXY_FAILOVER="$(WS_PROXY_FAILOVER)" nohup python3 wsproxy.py > wsproxy.log 2>&1 &
 	@sleep 1
-	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
+	@if pgrep -f '(^|/)python3 .*wsproxy\.py' >/dev/null 2>&1; then \
 		echo "wsproxy.py up on :8084."; \
 		echo "Log: $(STREAMING_DIR)/wsproxy.log (look for 'WS session model:')."; \
 	else \
