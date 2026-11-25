@@ -181,7 +181,7 @@ def run_scenario(name, up_port, proxy_port, scenario):
 
     threading.Thread(target=upstream_server, daemon=True).start()
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(proxy_port),
-               WS_PROXY_UPSTREAM_HOST=HOST, WS_PROXY_UPSTREAM_PORT=str(up_port))
+               WS_PROXY_FAILOVER=f"dictate-streaming-nemotron@{HOST}:{up_port}")
     proc = subprocess.Popen(
         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                       "wsproxy.py")],

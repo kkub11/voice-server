@@ -10,23 +10,19 @@ server, so they are only used when that server is up.
 
 Checks, all against real sockets (no LocalAI needed):
  1. parse_failover() parses "model@host:port" and "model@host".
- 2. failover_candidates() with no FAILOVER list returns the default
-    single upstream candidate.
- 3. failover_candidates(field) with no FAILOVER list tries the
-    Dictate field before the default candidate.
- 4. order_candidates() puts the field's model entries first.
- 5. A session whose first-listed server is down falls through to the
+ 2. failover_candidates() with no WS_PROXY_FAILOVER returns
+    DEFAULT_FAILOVER.
+ 3. order_candidates() puts the field's model entries first.
+ 4. A session whose first-listed server is down falls through to the
     next candidate, and the upstream sees the right ?model= and the
     session.update rewritten to the chosen model.
- 6. A session whose field names a model later in the list tries that
+ 5. A session whose field names a model later in the list tries that
     model first (on its server) even though it is not first.
- 7. HTTP GET /v1/models via the proxy reaches the first reachable
+ 6. HTTP GET /v1/models via the proxy reaches the first reachable
     server in the list.
- 8. Single-server mode (no FAILOVER list) tries a non-empty Dictate
-    field before the default candidate.
- 9. Single-server mode falls back to the default candidate when the
-    field's model cannot connect, rewriting session.update to the
-    fallback.
+ 7. A field naming a later list entry wins over the first entry.
+ 8. When the field's candidate cannot connect, wsproxy falls back
+    to the next list candidate and rewrites session.update.
 
 Run: python3 test_wsproxy_failover.py
 """
@@ -177,8 +173,6 @@ def _handle_one(conn, results, reject_model=None):
 
 def run_proxy(env_extra, proxy_port):
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(proxy_port),
-               WS_PROXY_UPSTREAM_HOST=HOST,
-               WS_PROXY_UPSTREAM_PORT=str(MAIN_PORT),
                WS_PROXY_FAILOVER_TIMEOUT="0.5")
     env.update(env_extra)
     proc = subprocess.Popen(
@@ -242,18 +236,8 @@ def main():
         check("parse_failover rejects a bare model", True)
 
     os.environ.pop("WS_PROXY_FAILOVER", None)
-    wsproxy.DEFAULT_MODEL = "dictate-streaming"
-    wsproxy.UPSTREAM_HOST, wsproxy.UPSTREAM_PORT = HOST, MAIN_PORT
-    check("no FAILOVER list -> default single upstream",
-          wsproxy.failover_candidates() ==
-          [("dictate-streaming", HOST, MAIN_PORT)])
-    check("single-server field is tried before default candidate",
-          wsproxy.failover_candidates("dictate-streaming-tdt") ==
-          [("dictate-streaming-tdt", HOST, MAIN_PORT),
-           ("dictate-streaming", HOST, MAIN_PORT)])
-    check("single-server field equal to default stays single",
-          wsproxy.failover_candidates("dictate-streaming") ==
-          [("dictate-streaming", HOST, MAIN_PORT)])
+    check("no WS_PROXY_FAILOVER -> DEFAULT_FAILOVER",
+          wsproxy.failover_candidates() == wsproxy.parse_failover(wsproxy.DEFAULT_FAILOVER))
     cands = [("whisper", HOST, FAST_PORT), ("nemotron", HOST, FAST_PORT),
              ("eou", HOST, MAIN_PORT)]
     check("order_candidates puts the field's model first",
@@ -328,7 +312,6 @@ def main():
         "WS_PROXY_FAILOVER":
             f"dictate-streaming-whisper@{HOST}:{FAST_PORT2},"
             f"dictate-streaming@{HOST}:{MAIN_PORT2}",
-        "WS_PROXY_UPSTREAM_PORT": str(MAIN_PORT2),
     }, PROXY_PORT2)
     try:
         resp, _ = ws_session("dictate-streaming", PROXY_PORT2)
@@ -349,9 +332,9 @@ def main():
         stop2.set()
         stop3.set()
 
-    # --- integration: single-server field wins -------------------------
-    # No failover list. The default candidate is EOU, but the Dictate
-    # field names TDT, so TDT must be the upstream model.
+    # --- integration: field names a later list entry ------------------
+    # The list starts with EOU, but the Dictate field names TDT, so
+    # TDT must be tried first.
     results4 = {}
     stop4 = threading.Event()
     t4 = threading.Thread(target=fake_upstream_server,
@@ -359,15 +342,16 @@ def main():
     t4.start()
     time.sleep(0.2)
     proc = run_proxy({
-        "WS_PROXY_FAILOVER": "",
-        "WS_PROXY_UPSTREAM_PORT": str(MAIN_PORT3),
+        "WS_PROXY_FAILOVER":
+            f"dictate-streaming@{HOST}:{MAIN_PORT3},"
+            f"dictate-streaming-tdt@{HOST}:{MAIN_PORT3}",
     }, PROXY_PORT3)
     try:
         resp, _ = ws_session("dictate-streaming-tdt", PROXY_PORT3)
-        check("proxy answers WS handshake in single-server mode",
+        check("proxy answers WS handshake with field later in list",
               resp.startswith(b"HTTP/1.1 101"), f"got {resp[:40]!r}")
         time.sleep(0.3)
-        check("single-server field wins over default candidate",
+        check("field later in list wins over first entry",
               results4.get("ws_model", "").endswith("?model=dictate-streaming-tdt")
               and results4.get("session_update_model") == "dictate-streaming-tdt",
               f"got {results4!r}")
@@ -380,10 +364,10 @@ def main():
             out = ""
         stop4.set()
 
-    # --- integration: single-server fallback to default candidate -----
+    # --- integration: fallback to next list candidate -----------------
     # Same setup, but the upstream rejects the field's model at the WS
-    # handshake. The proxy must fall back to the default candidate and
-    # rewrite session.update to that fallback model.
+    # handshake. The proxy must fall back to the next list candidate
+    # and rewrite session.update to that fallback model.
     results5 = {}
     stop5 = threading.Event()
     t5 = threading.Thread(target=fake_upstream_server,
@@ -392,15 +376,16 @@ def main():
     t5.start()
     time.sleep(0.2)
     proc = run_proxy({
-        "WS_PROXY_FAILOVER": "",
-        "WS_PROXY_UPSTREAM_PORT": str(MAIN_PORT4),
+        "WS_PROXY_FAILOVER":
+            f"dictate-streaming-tdt@{HOST}:{MAIN_PORT4},"
+            f"dictate-streaming@{HOST}:{MAIN_PORT4}",
     }, PROXY_PORT4)
     try:
         resp, _ = ws_session("dictate-streaming-tdt", PROXY_PORT4)
-        check("proxy answers WS handshake after single-server fallback",
+        check("proxy answers WS handshake after list fallback",
               resp.startswith(b"HTTP/1.1 101"), f"got {resp[:40]!r}")
         time.sleep(0.3)
-        check("single-server fallback uses default candidate",
+        check("fallback uses next list candidate",
               results5.get("rejected_ws_model", "").endswith("?model=dictate-streaming-tdt")
               and results5.get("ws_model", "").endswith("?model=dictate-streaming")
               and results5.get("session_update_model") == "dictate-streaming",

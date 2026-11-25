@@ -65,7 +65,7 @@ def main():
     stop = threading.Event()
     threading.Thread(target=fake_upstream, args=(up_port, stop), daemon=True).start()
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(proxy_port),
-               WS_PROXY_UPSTREAM_PORT=str(up_port),
+               WS_PROXY_FAILOVER=f"dictate-streaming@127.0.0.1:{up_port}",
                WS_PROXY_RECORDINGS_DIR=rec_dir)
     proc = subprocess.Popen([sys.executable, os.path.join(HERE, "wsproxy.py")],
                             env=env, stdout=subprocess.PIPE,

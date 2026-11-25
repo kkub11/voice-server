@@ -89,19 +89,13 @@ Usage on odin (from ~/streaming-dictation):
     #  stay exactly as they are)
 
 Env overrides: WS_PROXY_LISTEN_PORT (default 8084),
-  WS_PROXY_UPSTREAM_HOST (default 127.0.0.1), WS_PROXY_UPSTREAM_PORT
-  (default 8081). Failover (2026-11-24, list-based):
-  WS_PROXY_FAILOVER is an ordered, comma-separated list of
-  "model@host:port" entries (port optional, default 8081). The first
-  reachable server wins. The Dictate Real-time model field names the
-  phone's preferred model and is tried first (entries with that
-  model, in list order), then the rest of the list. If
-  WS_PROXY_FAILOVER is unset, the candidate list is the Dictate
-  field on the main local server (when non-empty), then
-  DEFAULT_MODEL on the main local server. "Fast remote" is the
-  second, faster machine (a laptop with a GPU); "main local" is this
-  box's own LocalAI. WS_PROXY_FAILOVER_TIMEOUT (default 2 s) is the
-  per-server probe timeout.
+  WS_PROXY_FAILOVER (default DEFAULT_FAILOVER below),
+  WS_PROXY_FAILOVER_TIMEOUT (default 2 s). WS_PROXY_FAILOVER is the
+  one ordered candidate list: comma-separated "model@host:port"
+  entries (port optional, default 8081). wsproxy checks the list in
+  order and skips a candidate whose server is down. The Dictate
+  Real-time model field remains the first choice: entries with that
+  model are tried first (in list order), then the rest of the list.
 """
 
 import base64
@@ -119,27 +113,18 @@ import wave
 
 LISTEN_HOST = os.environ.get("WS_PROXY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("WS_PROXY_LISTEN_PORT", "8084"))
-UPSTREAM_HOST = os.environ.get("WS_PROXY_UPSTREAM_HOST", "127.0.0.1")
-UPSTREAM_PORT = int(os.environ.get("WS_PROXY_UPSTREAM_PORT", "8081"))
-DEFAULT_MODEL = "dictate-streaming"
 
-# Failover (2026-11-24, list-based): an ordered list of (model, server)
-# candidates. Each entry is "model@host:port" (port optional, default
-# 8081). The first reachable server wins. The bigger models (whisper,
-# nemotron) live only on the fast remote server, so they are only used
-# when that server is up; the main local server carries the smaller
-# ones (EOU, TDT) as the fallback.
-#
-#   WS_PROXY_FAILOVER="dictate-streaming-whisper@192.168.1.236:8081, dictate-streaming-nemotron@192.168.1.236:8081, dictate-streaming@127.0.0.1:8081"
-#
-# "Fast remote" is the second, faster machine (a laptop with a GPU);
-# "main local" is this box's own LocalAI (UPSTREAM_*). The names are
-# generic on purpose -- other people's systems have different hostnames.
-#
-# If WS_PROXY_FAILOVER is unset, the candidate list is the Dictate
-# field on the main local server (when non-empty), then DEFAULT_MODEL
-# on the main local server. WS_PROXY_FAILOVER_TIMEOUT (default 2 s)
-# is the per-server probe timeout.
+# The one failover list. Edit this string to change the candidates
+# wsproxy tries when WS_PROXY_FAILOVER is not set. Entries are
+# "model@host:port" (port optional, default 8081), checked in order;
+# a candidate is skipped when its server is down. The Dictate
+# Real-time model field is still the first choice: matching entries
+# are moved first, then the rest of the list is tried in order.
+DEFAULT_FAILOVER = (
+    "dictate-streaming-whisper@192.168.1.236:8081, "
+    "dictate-streaming-nemotron@192.168.1.236:8081, "
+    "dictate-streaming@127.0.0.1:8081"
+)
 FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))
 
 
@@ -168,23 +153,16 @@ def parse_failover(raw):
     return out
 
 
-def failover_candidates(field_model=""):
-    """[(model, host, port)] in try order, from the env config.
+def failover_candidates():
+    """[(model, host, port)] in configured try order.
 
-    With an explicit WS_PROXY_FAILOVER list, the list is returned as
-    configured and order_candidates() moves the Dictate field's model
-    first. Without a list, single-server mode synthesizes the field
-    as a candidate on main local so the Dictate setting wins there
-    too; DEFAULT_MODEL remains the fallback if that candidate cannot
-    connect, and the default when the field is blank.
+    The list comes from WS_PROXY_FAILOVER when set, else
+    DEFAULT_FAILOVER. order_candidates() moves the Dictate field's
+    model first for a WebSocket session; HTTP forwarding uses this
+    order as configured.
     """
-    raw = os.environ.get("WS_PROXY_FAILOVER", "")
-    if raw.strip():
-        return parse_failover(raw)
-    if field_model and field_model != DEFAULT_MODEL:
-        return [(field_model, UPSTREAM_HOST, UPSTREAM_PORT),
-                (DEFAULT_MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
-    return [(DEFAULT_MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
+    raw = os.environ.get("WS_PROXY_FAILOVER", "").strip() or DEFAULT_FAILOVER
+    return parse_failover(raw)
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_HTTP_HEAD = 65536
@@ -308,7 +286,7 @@ def rewrite_session_update(payload, chosen_model=None):
     actually exists on the chosen server (a field naming whisper
     would otherwise make odin try to rebuild to a pipeline it does
     not have). When None, the old rule applies: fill a blank field
-    with DEFAULT_MODEL, leave a non-empty field alone.
+    with the first candidate model, leave a non-empty field alone.
     """
     try:
         msg = json.loads(payload.decode("utf-8"))
@@ -340,9 +318,10 @@ def rewrite_session_update(payload, chosen_model=None):
                         f"{model!r} -> {chosen_model!r} (failover pick)")
                     changed = True
             elif not isinstance(model, str) or not model.strip():
-                tr["model"] = DEFAULT_MODEL
+                first_model = failover_candidates()[0][0]
+                tr["model"] = first_model
                 log("REWRITE session.update: blank transcription model "
-                    f"-> {DEFAULT_MODEL!r} (triggers LocalAI model rebuild)")
+                    f"-> {first_model!r} (triggers LocalAI model rebuild)")
                 changed = True
     except (KeyError, TypeError, AttributeError):
         pass
@@ -626,7 +605,7 @@ def ws_connect_upstream(extra_headers, field_model):
     remote delays the fallback by at most ~2 s. If a candidate
     connects but then fails the handshake (rare race), the next
     candidate is tried."""
-    candidates = order_candidates(failover_candidates(field_model), field_model)
+    candidates = order_candidates(failover_candidates(), field_model)
     last_exc = None
     for model, host, port in candidates:
         try:
@@ -923,8 +902,7 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((LISTEN_HOST, LISTEN_PORT))
     srv.listen(32)
-    log(f"dictate-wsproxy listening on {LISTEN_HOST}:{LISTEN_PORT} "
-        f"-> upstream {UPSTREAM_HOST}:{UPSTREAM_PORT}"
+    log(f"dictate-wsproxy listening on {LISTEN_HOST}:{LISTEN_PORT}"
         + (f" [candidates: {', '.join(f'{m}@{h}:{p}' for m, h, p in failover_candidates())}, "
            f"timeout {FAILOVER_TIMEOUT:g}s]"))
     try:

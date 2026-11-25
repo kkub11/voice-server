@@ -183,7 +183,7 @@ def fake_dictate_client():
 def main():
     threading.Thread(target=fake_upstream_server, daemon=True).start()
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(PROXY_PORT),
-               WS_PROXY_UPSTREAM_HOST=HOST, WS_PROXY_UPSTREAM_PORT=str(UP_PORT))
+               WS_PROXY_FAILOVER=f"dictate-streaming@{HOST}:{UP_PORT}")
     proc = subprocess.Popen([sys.executable, os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "wsproxy.py")],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -270,8 +270,8 @@ def main():
             return json.dumps({"type": "session.update", "session": {"type": "transcription",
                 "audio": {"input": {"transcription": {"model": model}, "turn_detection": None}}}}).encode()
         _blank = json.loads(rewrite_session_update(_su("")))
-        check("blank transcription model filled with default candidate",
-              _blank["session"]["audio"]["input"]["transcription"]["model"] == wsproxy.DEFAULT_MODEL,
+        check("blank transcription model filled with first candidate",
+              _blank["session"]["audio"]["input"]["transcription"]["model"] == wsproxy.failover_candidates()[0][0],
               f"got: {_blank['session']['audio']['input']['transcription']}")
         _kept = json.loads(rewrite_session_update(_su("dictate-streaming-nemotron")))
         check("non-empty transcription model preserved",
