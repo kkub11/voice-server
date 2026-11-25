@@ -15,7 +15,14 @@ Why it exists (2026-11-15):
   This proxy sits between them and strips the `"turn_detection": null`
   key from Dictate's session.update, so LocalAI keeps the pipeline's
   own semantic_vad turn detection and the live deltas flow. It also
-  drops LocalAI's `not_implemented` error event on the way back: when
+  fills in a blank transcription model in session.update with this
+  proxy's pipeline name (2026-11-24): Dictate sends the provider's
+  "Real-time model" field there, and LocalAI only rebuilds the
+  transcription model -- the step that wires up live deltas -- when
+  that model is non-empty and differs from the pipeline's underlying
+  model name. A blank field means no rebuild and no live deltas (only
+  the final transcript at stop). A non-empty model is the phone's own
+  choice and is left alone. It also drops LocalAI's `not_implemented` error event on the way back: when
   the user stops, Dictate sends a commit, and with server turn
   detection on LocalAI answers that commit with an error event --
   which Dictate treats as fatal and cancels the session over. Dropping
@@ -206,8 +213,24 @@ class WSConn:
 
 def rewrite_session_update(payload):
     """Strip turn_detection:null from a session.update so LocalAI keeps
-    the pipeline's semantic_vad (the live-delta path). Anything else
-    passes through untouched."""
+    the pipeline's semantic_vad (the live-delta path), and fill in a
+    blank transcription model with this proxy's pipeline name.
+    Anything else passes through untouched.
+
+    The model fill (2026-11-24): Dictate sends the provider's
+    "Real-time model" field as session.audio.input.transcription.model.
+    LocalAI only rebuilds the transcription model -- the step that
+    wires up live word-by-word deltas -- when that model is non-empty
+    AND differs from the pipeline's underlying model name. A blank
+    field means no rebuild, and the session runs on the model
+    interface built from the ?model= query, which emits the final
+    transcript but no live deltas (her phone, 2026-11-24: a 25 s turn
+    produced nothing until stop). Filling the field with the pipeline
+    name triggers the rebuild and deltas flow. So when the client
+    leaves the model blank, set it to this proxy's MODEL (the pipeline
+    name) here. A non-empty model is the phone's own choice and is
+    left alone, so a phone that names a different pipeline keeps it.
+    """
     try:
         msg = json.loads(payload.decode("utf-8"))
     except Exception:
@@ -218,11 +241,30 @@ def rewrite_session_update(payload):
         audio_input = msg["session"]["audio"]["input"]
     except (KeyError, TypeError):
         return payload
-    if isinstance(audio_input, dict) and audio_input.get("turn_detection") is None \
+    if not isinstance(audio_input, dict):
+        return payload
+    changed = False
+    if audio_input.get("turn_detection") is None \
             and "turn_detection" in audio_input:
         del audio_input["turn_detection"]
         log("REWRITE session.update: stripped turn_detection:null "
             "(server keeps semantic_vad)")
+        changed = True
+    # Fill a blank transcription model so LocalAI rebuilds the model
+    # (see docstring). Only when blank/missing; never overwrite a
+    # phone's own non-empty choice.
+    try:
+        tr = audio_input.get("transcription")
+        if isinstance(tr, dict):
+            model = tr.get("model")
+            if not isinstance(model, str) or not model.strip():
+                tr["model"] = MODEL
+                log("REWRITE session.update: blank transcription model "
+                    f"-> {MODEL!r} (triggers LocalAI model rebuild)")
+                changed = True
+    except (KeyError, TypeError, AttributeError):
+        pass
+    if changed:
         return json.dumps(msg, separators=(",", ":")).encode("utf-8")
     return payload
 
