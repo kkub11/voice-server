@@ -24,7 +24,7 @@
 
 services:
   localai:
-    image: localai/localai:latest-gpu
+    image: localai/localai:latest-gpu-nvidia-cuda-12
     deploy:
       resources:
         reservations:
