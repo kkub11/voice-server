@@ -16,21 +16,22 @@
 #   make env      # create parakeet-api/.env with a generated key
 #   make up       # start parakeet-api + LocalAI
 #   make models   # install LocalAI gallery models (localai must be up)
-#   make proxy    # start wsproxy.py on :8084 (Nemotron by default)
+#   make proxy    # start wsproxy.py on :8084 (local candidate list)
 #   make status   # containers + wsproxy state
 #   make up-gpu   # start LocalAI with the GPU image (any GPU machine)
 #   make proxy-failover  # restart wsproxy with a fast remote as first failover
 #
-# Override the streaming pipeline for the proxy, e.g.:
-#   make proxy WS_PROXY_MODEL=dictate-streaming-tdt
+# Override the candidate list, e.g.:
+#   make proxy LOCAL_FAILOVER="dictate-streaming-tdt@127.0.0.1:8081"
 
 PARAKEET_DIR  := parakeet-api
 STREAMING_DIR := streaming-dictation
 SPEACHES_DIR  := speaches
 
-# Default streaming pipeline. The proxy injects this as ?model= to
-# LocalAI, overriding whatever Dictate sends.
-WS_PROXY_MODEL ?= dictate-streaming-nemotron
+# Local candidate list for `make proxy`: Dictate's Real-time model
+# field is tried first when it matches an entry; a blank field uses
+# the first reachable entry (EOU by default).
+LOCAL_FAILOVER ?= dictate-streaming@127.0.0.1:8081,dictate-streaming-tdt@127.0.0.1:8081,dictate-streaming-nemotron@127.0.0.1:8081
 
 # The fast remote server's LAN IP -- the second, faster machine (a
 # laptop with a GPU). DHCP today: 192.168.1.236. Set a static
@@ -50,14 +51,14 @@ FAILOVER ?= dictate-streaming-whisper@$(FAST_REMOTE_HOST):8081,dictate-streaming
 help: ## Show this help (default target).
 	@echo "voice-server — free local Wispr Flow alternative"
 	@echo ""
-	@echo "Usage: make <target> [WS_PROXY_MODEL=<pipeline>]"
+	@echo "Usage: make <target> [LOCAL_FAILOVER=<list>] [FAILOVER=<list>]"
 	@echo ""
 	@echo "Setup:"
 	@echo "  env           Create $(PARAKEET_DIR)/.env from .env.example (generates an API key)"
 	@echo "  up            Start parakeet-api (:8816) and LocalAI (:8081)"
 	@echo "  up-speaches   Start speaches (:8001) — opt-in only, not part of 'up'"
 	@echo "  models        Install LocalAI gallery models + print manual Nemotron/PnC steps"
-	@echo "  proxy         Start wsproxy.py on :8084 (WS_PROXY_MODEL=$(WS_PROXY_MODEL))"
+	@echo "  proxy         Start wsproxy.py on :8084 (local candidate list)"
 	@echo ""
 	@echo "Second server (fast remote, GPU) — up-gpu/models-gpu run on the GPU machine:"
 	@echo "  up-gpu        Start LocalAI with the GPU image (:8081, same container name)"
@@ -72,9 +73,9 @@ help: ## Show this help (default target).
 	@echo "  down          Stop parakeet-api + LocalAI"
 	@echo "  down-speaches Stop speaches"
 	@echo ""
-	@echo "Streaming pipelines for 'make proxy WS_PROXY_MODEL=<name>':"
-	@echo "  dictate-streaming-nemotron  Nemotron 0.6B (recommended)"
-	@echo "  dictate-streaming           Parakeet EOU 120M"
+	@echo "Streaming pipelines for Dictate's Real-time model field / candidate lists:"
+	@echo "  dictate-streaming           Parakeet EOU 120M (recommended)"
+	@echo "  dictate-streaming-nemotron  Nemotron 0.6B"
 	@echo "  dictate-streaming-tdt       Parakeet TDT 0.6B v3"
 	@echo "  dictate-streaming-tdt-v2    Parakeet TDT 0.6B v2 (English-only, 6.05% WER)"
 	@echo "  dictate-streaming-whisper   Whisper large-v3 (fast remote GPU only, Japanese + punctuation)"
@@ -149,16 +150,16 @@ models: ## Install LocalAI gallery models; print manual Nemotron/PnC steps.
 	@echo "Note: the PnC BERT is attached but does not punctuate in"
 	@echo "practice for this model (see README, Nemotron section)."
 
-proxy: ## Start wsproxy.py on :8084 (WS_PROXY_MODEL=$(WS_PROXY_MODEL)).
+proxy: ## Start wsproxy.py on :8084 (local candidate list).
 	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
 		echo "wsproxy.py is already running. 'make proxy-stop' first, or 'make status' to check."; \
 		exit 1; \
 	fi
 	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
-	@cd $(STREAMING_DIR) && WS_PROXY_MODEL=$(WS_PROXY_MODEL) nohup python3 wsproxy.py > wsproxy.log 2>&1 &
+	@cd $(STREAMING_DIR) && WS_PROXY_FAILOVER="$(LOCAL_FAILOVER)" nohup python3 wsproxy.py > wsproxy.log 2>&1 &
 	@sleep 1
 	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
-		echo "wsproxy.py up on :8084 with model $(WS_PROXY_MODEL). Log: $(STREAMING_DIR)/wsproxy.log"; \
+		echo "wsproxy.py up on :8084 with local candidates: $(LOCAL_FAILOVER). Log: $(STREAMING_DIR)/wsproxy.log"; \
 	else \
 		echo "wsproxy.py failed to start — see $(STREAMING_DIR)/wsproxy.log"; exit 1; \
 	fi
@@ -209,7 +210,7 @@ models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must
 proxy-failover: ## Restart wsproxy on :8084 with the FAILOVER list (fast remote first). Run ON the main local server.
 	@pkill -f wsproxy.py 2>/dev/null; sleep 1
 	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
-	@cd $(STREAMING_DIR) && WS_PROXY_MODEL=$(WS_PROXY_MODEL) WS_PROXY_FAILOVER="$(FAILOVER)" nohup python3 wsproxy.py > wsproxy.log 2>&1 &
+	@cd $(STREAMING_DIR) && WS_PROXY_FAILOVER="$(FAILOVER)" nohup python3 wsproxy.py > wsproxy.log 2>&1 &
 	@sleep 1
 	@if pgrep -f wsproxy.py >/dev/null 2>&1; then \
 		echo "wsproxy.py up on :8084 with failover list:"; \

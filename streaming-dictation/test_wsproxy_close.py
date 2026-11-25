@@ -9,13 +9,19 @@ the session at once. When the turn is still open it must do nothing
 (the tail wait protects the last words).
 
 Three scenarios, each a fresh proxy + fake upstream on its own ports:
- 1. close-when-completed: delta + completed, then commit -> the
-    client must receive a WS close frame (opcode 8) promptly, and
-    the commit must have reached the upstream first.
+ 1. close-when-completed: delta + speech_stopped + committed +
+    completed, then commit -> the client must receive a WS close
+    frame (opcode 8) promptly, and the commit must have reached the
+    upstream first.
  2. no-close-when-open: delta only (no completed), then commit -> no
     close frame within 1.5 s.
  3. no-close-when-new-turn: delta + completed, then a delta for a
     new turn, then commit -> no close frame within 1.5 s.
+ 4. late-completed (the 2026-11-19 incident, replayed): turn 1
+    ends, turn 2 starts, THEN turn 1's completed arrives (late) --
+    commit -> NO close; then turn 2 ends properly (speech_stopped +
+    committed + completed) and a second commit -> close. The late
+    completed must not count for the turn that is already open.
 """
 import base64
 import hashlib
@@ -70,9 +76,15 @@ def read_head(sock):
 
 
 def run_scenario(name, up_port, proxy_port, scenario):
-    """Run one scenario. Returns (close_seen, commit_reached_upstream)."""
+    """Run one scenario. Returns (close_seen, commit_reached_upstream,
+    close_seen_second_commit) -- the third is only used by the
+    late-completed scenario, which sends a second commit after turn 2
+    ends properly."""
     upstream_got = {"commit": False}
     stop_upstream = threading.Event()
+
+    def send_ev(ws, ev):
+        ws.send_frame(1, json.dumps(ev).encode())
 
     def upstream_client(sock):
         try:
@@ -100,23 +112,50 @@ def run_scenario(name, up_port, proxy_port, scenario):
                 except Exception:
                     continue
                 if msg.get("type") == "session.update":
-                    ws.send_frame(1, json.dumps(
-                        {"type": "conversation.item.input_audio_transcription.delta",
-                         "delta": "hello ",
-                         "event_id": "event_TODO"}).encode())
-                    if scenario in ("close", "new-turn"):
-                        ws.send_frame(1, json.dumps(
-                            {"type": "conversation.item.input_audio_transcription.completed",
-                             "transcript": "hello world"}).encode())
-                    if scenario == "new-turn":
-                        # a new turn starts: its first delta arrives
-                        # BEFORE the commit, so the turn is open again
-                        ws.send_frame(1, json.dumps(
+                    if scenario == "late-completed":
+                        # The 2026-11-19 incident, replayed: turn 1
+                        # ends, turn 2 starts, THEN turn 1's completed
+                        # arrives (late -- transcription lags the VAD).
+                        for ev in (
+                            {"type": "input_audio_buffer.speech_started"},
                             {"type": "conversation.item.input_audio_transcription.delta",
-                             "delta": "more ",
-                             "event_id": "event_TODO"}).encode())
+                             "delta": "were the ", "event_id": "event_TODO"},
+                            {"type": "input_audio_buffer.speech_stopped"},
+                            {"type": "input_audio_buffer.committed"},
+                            {"type": "input_audio_buffer.speech_started"},
+                            {"type": "conversation.item.input_audio_transcription.completed",
+                             "transcript": "were the sea people's and"},
+                        ):
+                            send_ev(ws, ev)
+                    else:
+                        send_ev(ws, {"type": "conversation.item.input_audio_transcription.delta",
+                                     "delta": "hello ",
+                                     "event_id": "event_TODO"})
+                        if scenario in ("close", "new-turn"):
+                            # realistic order: the turn's audio ends
+                            # before its completed arrives
+                            send_ev(ws, {"type": "input_audio_buffer.speech_stopped"})
+                            send_ev(ws, {"type": "input_audio_buffer.committed"})
+                            send_ev(ws, {"type": "conversation.item.input_audio_transcription.completed",
+                                         "transcript": "hello world"})
+                        if scenario == "new-turn":
+                            # a new turn starts: its first delta arrives
+                            # BEFORE the commit, so the turn is open again
+                            send_ev(ws, {"type": "conversation.item.input_audio_transcription.delta",
+                                         "delta": "more ",
+                                         "event_id": "event_TODO"})
                 elif msg.get("type") == "input_audio_buffer.commit":
                     upstream_got["commit"] = True
+                    if scenario == "late-completed" and not upstream_got.get("phase2_sent"):
+                        upstream_got["phase2_sent"] = True
+                        # turn 2 ends properly, after the first commit
+                        for ev in (
+                            {"type": "input_audio_buffer.speech_stopped"},
+                            {"type": "input_audio_buffer.committed"},
+                            {"type": "conversation.item.input_audio_transcription.completed",
+                             "transcript": "the bronze age collapse at the same time as the trojan war?"},
+                        ):
+                            send_ev(ws, ev)
         except Exception as exc:  # noqa: BLE001
             print(f"[{name}] upstream handler error:", exc)
         finally:
@@ -142,13 +181,13 @@ def run_scenario(name, up_port, proxy_port, scenario):
 
     threading.Thread(target=upstream_server, daemon=True).start()
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(proxy_port),
-               WS_PROXY_UPSTREAM_HOST=HOST, WS_PROXY_UPSTREAM_PORT=str(up_port),
-               WS_PROXY_MODEL="dictate-streaming-nemotron")
+               WS_PROXY_UPSTREAM_HOST=HOST, WS_PROXY_UPSTREAM_PORT=str(up_port))
     proc = subprocess.Popen(
         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                       "wsproxy.py")],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     close_seen = False
+    close_second = False
     try:
         for _ in range(50):
             try:
@@ -159,7 +198,7 @@ def run_scenario(name, up_port, proxy_port, scenario):
                 time.sleep(0.1)
         else:
             print(f"FAIL [{name}]: proxy never started listening")
-            return False, False
+            return False, False, False
 
         sock = socket.create_connection((HOST, proxy_port), timeout=15)
         key = base64.b64encode(b"0123456789abcdef").decode()
@@ -176,9 +215,11 @@ def run_scenario(name, up_port, proxy_port, scenario):
         sock.settimeout(10)
         ws.send_frame(1, json.dumps(SESSION_UPDATE).encode(), mask=True)
         # wait for the upstream events to flow back (delta/completed)
+        expect_frames = {"close": 4, "new-turn": 5, "open": 1,
+                         "late-completed": 6}[scenario]
         deadline = time.time() + 5
         got = 0
-        while time.time() < deadline and got < 2:
+        while time.time() < deadline and got < expect_frames:
             try:
                 opcode, _ = ws.read_frame()
             except (ConnectionError, OSError, socket.timeout):
@@ -199,6 +240,22 @@ def run_scenario(name, up_port, proxy_port, scenario):
             if opcode == 8:
                 close_seen = True
                 break
+        if scenario == "late-completed" and not close_seen:
+            # turn 2 has now ended properly (the upstream sent its
+            # end events when it saw the first commit); a second
+            # commit must close the session.
+            time.sleep(0.3)
+            ws.send_frame(1, json.dumps(
+                {"type": "input_audio_buffer.commit"}).encode(), mask=True)
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                try:
+                    opcode, _ = ws.read_frame()
+                except (ConnectionError, OSError, socket.timeout):
+                    break
+                if opcode == 8:
+                    close_second = True
+                    break
         try:
             ws.close(1000)
         except OSError:
@@ -215,8 +272,8 @@ def run_scenario(name, up_port, proxy_port, scenario):
         if name == "close" and "CLOSE-ON-COMMIT" not in out:
             print(f"FAIL [{name}]: proxy log missing CLOSE-ON-COMMIT")
             print(out)
-            return close_seen, upstream_got["commit"]
-    return close_seen, upstream_got["commit"]
+            return close_seen, upstream_got["commit"], close_second
+    return close_seen, upstream_got["commit"], close_second
 
 
 def main():
@@ -228,15 +285,21 @@ def main():
               + (f" -- {detail}" if detail and not cond else ""))
         ok = ok and cond
 
-    close_seen, commit_up = run_scenario("close", 18091, 18094, "close")
+    close_seen, commit_up, _ = run_scenario("close", 18091, 18094, "close")
     check("close when turn completed", close_seen)
     check("commit still forwarded upstream", commit_up)
 
-    close_seen, _ = run_scenario("open", 18092, 18095, "open")
+    close_seen, _, _ = run_scenario("open", 18092, 18095, "open")
     check("no close when turn still open", not close_seen)
 
-    close_seen, _ = run_scenario("new-turn", 18093, 18096, "new-turn")
+    close_seen, _, _ = run_scenario("new-turn", 18093, 18096, "new-turn")
     check("no close when a new turn started", not close_seen)
+
+    first_close, _, second_close = run_scenario(
+        "late-completed", 18097, 18099, "late-completed")
+    check("no close on a late completed for the previous turn",
+          not first_close)
+    check("close once the open turn completes", second_close)
 
     print("\nALL PASS" if ok else "\nSOME FAILED")
     return 0 if ok else 1

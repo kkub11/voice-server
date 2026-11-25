@@ -90,20 +90,18 @@ Usage on odin (from ~/streaming-dictation):
 
 Env overrides: WS_PROXY_LISTEN_PORT (default 8084),
   WS_PROXY_UPSTREAM_HOST (default 127.0.0.1), WS_PROXY_UPSTREAM_PORT
-  (default 8081), WS_PROXY_MODEL (default dictate-streaming).
-  Failover (2026-11-24, list-based): WS_PROXY_FAILOVER is an ordered,
-  comma-separated list of "model@host:port" entries (port optional,
-  default 8081). The first reachable server wins. The Dictate
-  Real-time model field names the phone's preferred model and is
-  tried first (entries with that model, in list order), then the
-  rest of the list. Shorthand: if WS_PROXY_FAILOVER is unset but
-  FAST_REMOTE_HOST is set (FAST_REMOTE_PORT, default 8081), the list
-  is [(MODEL, fast-remote), (MODEL, main-local)]. If neither is set,
-  single-server mode tries a non-empty Dictate field on the main
-  local server first, with MODEL as the fallback/default. "Fast
-  remote" is the second, faster machine (a laptop with a GPU);
-  "main local" is this box's own LocalAI. WS_PROXY_FAILOVER_TIMEOUT
-  (default 2 s) is the per-server probe timeout.
+  (default 8081). Failover (2026-11-24, list-based):
+  WS_PROXY_FAILOVER is an ordered, comma-separated list of
+  "model@host:port" entries (port optional, default 8081). The first
+  reachable server wins. The Dictate Real-time model field names the
+  phone's preferred model and is tried first (entries with that
+  model, in list order), then the rest of the list. If
+  WS_PROXY_FAILOVER is unset, the candidate list is the Dictate
+  field on the main local server (when non-empty), then
+  DEFAULT_MODEL on the main local server. "Fast remote" is the
+  second, faster machine (a laptop with a GPU); "main local" is this
+  box's own LocalAI. WS_PROXY_FAILOVER_TIMEOUT (default 2 s) is the
+  per-server probe timeout.
 """
 
 import base64
@@ -123,7 +121,7 @@ LISTEN_HOST = os.environ.get("WS_PROXY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("WS_PROXY_LISTEN_PORT", "8084"))
 UPSTREAM_HOST = os.environ.get("WS_PROXY_UPSTREAM_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("WS_PROXY_UPSTREAM_PORT", "8081"))
-MODEL = os.environ.get("WS_PROXY_MODEL", "dictate-streaming")
+DEFAULT_MODEL = "dictate-streaming"
 
 # Failover (2026-11-24, list-based): an ordered list of (model, server)
 # candidates. Each entry is "model@host:port" (port optional, default
@@ -138,14 +136,11 @@ MODEL = os.environ.get("WS_PROXY_MODEL", "dictate-streaming")
 # "main local" is this box's own LocalAI (UPSTREAM_*). The names are
 # generic on purpose -- other people's systems have different hostnames.
 #
-# Shorthand: if WS_PROXY_FAILOVER is unset but FAST_REMOTE_HOST is set,
-# the list is [(MODEL, fast-remote), (MODEL, main-local)]. If neither
-# is set, single-server mode tries a non-empty Dictate field on the
-# main local server first, then MODEL as the fallback/default.
-# WS_PROXY_FAILOVER_TIMEOUT (default 2 s) is the per-server probe timeout.
+# If WS_PROXY_FAILOVER is unset, the candidate list is the Dictate
+# field on the main local server (when non-empty), then DEFAULT_MODEL
+# on the main local server. WS_PROXY_FAILOVER_TIMEOUT (default 2 s)
+# is the per-server probe timeout.
 FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))
-FAST_REMOTE_HOST = os.environ.get("FAST_REMOTE_HOST", "")
-FAST_REMOTE_PORT = int(os.environ.get("FAST_REMOTE_PORT", "8081"))
 
 
 def parse_failover(raw):
@@ -178,23 +173,18 @@ def failover_candidates(field_model=""):
 
     With an explicit WS_PROXY_FAILOVER list, the list is returned as
     configured and order_candidates() moves the Dictate field's model
-    first. With only FAST_REMOTE_HOST, the shorthand list is MODEL on
-    the fast remote, then MODEL on main local. With neither set,
-    single-server mode synthesizes the field as a candidate on main
-    local so the Dictate setting wins there too; MODEL remains the
-    fallback if that candidate cannot connect, and the default when
-    the field is blank.
+    first. Without a list, single-server mode synthesizes the field
+    as a candidate on main local so the Dictate setting wins there
+    too; DEFAULT_MODEL remains the fallback if that candidate cannot
+    connect, and the default when the field is blank.
     """
     raw = os.environ.get("WS_PROXY_FAILOVER", "")
     if raw.strip():
         return parse_failover(raw)
-    if FAST_REMOTE_HOST:
-        return [(MODEL, FAST_REMOTE_HOST, FAST_REMOTE_PORT),
-                (MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
-    if field_model and field_model != MODEL:
+    if field_model and field_model != DEFAULT_MODEL:
         return [(field_model, UPSTREAM_HOST, UPSTREAM_PORT),
-                (MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
-    return [(MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
+                (DEFAULT_MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
+    return [(DEFAULT_MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_HTTP_HEAD = 65536
@@ -318,7 +308,7 @@ def rewrite_session_update(payload, chosen_model=None):
     actually exists on the chosen server (a field naming whisper
     would otherwise make odin try to rebuild to a pipeline it does
     not have). When None, the old rule applies: fill a blank field
-    with this proxy's MODEL, leave a non-empty field alone.
+    with DEFAULT_MODEL, leave a non-empty field alone.
     """
     try:
         msg = json.loads(payload.decode("utf-8"))
@@ -350,9 +340,9 @@ def rewrite_session_update(payload, chosen_model=None):
                         f"{model!r} -> {chosen_model!r} (failover pick)")
                     changed = True
             elif not isinstance(model, str) or not model.strip():
-                tr["model"] = MODEL
+                tr["model"] = DEFAULT_MODEL
                 log("REWRITE session.update: blank transcription model "
-                    f"-> {MODEL!r} (triggers LocalAI model rebuild)")
+                    f"-> {DEFAULT_MODEL!r} (triggers LocalAI model rebuild)")
                 changed = True
     except (KeyError, TypeError, AttributeError):
         pass

@@ -20,7 +20,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from wsproxy import WSConn, WS_GUID  # noqa: E402
+import wsproxy
+from wsproxy import WSConn, WS_GUID, rewrite_session_update  # noqa: E402
 
 UP_PORT = 18081
 PROXY_PORT = 18084
@@ -182,8 +183,7 @@ def fake_dictate_client():
 def main():
     threading.Thread(target=fake_upstream_server, daemon=True).start()
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(PROXY_PORT),
-               WS_PROXY_UPSTREAM_HOST=HOST, WS_PROXY_UPSTREAM_PORT=str(UP_PORT),
-               WS_PROXY_MODEL="dictate-streaming")
+               WS_PROXY_UPSTREAM_HOST=HOST, WS_PROXY_UPSTREAM_PORT=str(UP_PORT))
     proc = subprocess.Popen([sys.executable, os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "wsproxy.py")],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -259,6 +259,23 @@ def main():
               f"surviving error: {surviving}")
         check("HTTP /v1/models proxied", models.get("data", [{}])[0].get("id") == "dictate-streaming",
               f"got: {models}")
+
+        # Blank-model fill (2026-11-24): a session.update whose
+        # transcription model is blank/missing gets the default
+        # candidate model (the pipeline name) so LocalAI rebuilds and
+        # live deltas flow; a non-empty model is the phone's own
+        # choice and is untouched by this helper when no chosen model
+        # is supplied.
+        def _su(model):
+            return json.dumps({"type": "session.update", "session": {"type": "transcription",
+                "audio": {"input": {"transcription": {"model": model}, "turn_detection": None}}}}).encode()
+        _blank = json.loads(rewrite_session_update(_su("")))
+        check("blank transcription model filled with default candidate",
+              _blank["session"]["audio"]["input"]["transcription"]["model"] == wsproxy.DEFAULT_MODEL,
+              f"got: {_blank['session']['audio']['input']['transcription']}")
+        _kept = json.loads(rewrite_session_update(_su("dictate-streaming-nemotron")))
+        check("non-empty transcription model preserved",
+              _kept["session"]["audio"]["input"]["transcription"]["model"] == "dictate-streaming-nemotron")
 
         print("\nALL PASS" if ok else "\nSOME FAILED")
         return 0 if ok else 1
