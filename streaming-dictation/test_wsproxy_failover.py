@@ -155,6 +155,7 @@ def _handle_one(conn, results, reject_model=None):
                 msg = json.loads(bytes(payload).decode("utf-8"))
                 tr = msg.get("session", {}).get("audio", {}).get("input", {}).get("transcription", {})
                 results["session_update_model"] = tr.get("model")
+                results["session_update_masked"] = bool(mask)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -276,6 +277,9 @@ def main():
         check("session.update model rewritten to the fallback model",
               results.get("session_update_model") == "dictate-streaming",
               f"got {results.get('session_update_model')!r}")
+        check("buffered session.update is masked (client->server frame)",
+              results.get("session_update_masked") is True,
+              f"got {results.get('session_update_masked')!r}")
         # HTTP: GET /v1/models via the proxy reaches the main server.
         conn = http.client.HTTPConnection(HOST, PROXY_PORT, timeout=5)
         conn.request("GET", "/v1/models")

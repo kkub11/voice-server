@@ -764,7 +764,7 @@ def handle_ws(client_sock, headers):
         rewritten = client_rewrite(payload)
         if rewritten is not None:
             try:
-                upstream.send_frame(1, rewritten, mask=False)
+                upstream.send_frame(1, rewritten, mask=True)
             except OSError:
                 log("WS setup failed: upstream closed while forwarding buffered frames")
                 try:
