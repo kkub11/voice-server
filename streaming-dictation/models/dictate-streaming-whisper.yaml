@@ -19,7 +19,7 @@
 # turn before relying on it.
 #
 # Install the model first (once, on zod):
-#   docker exec localai-zod /local-ai models install whisper-large-v3
+#   docker exec localai /local-ai models install whisper-large
 # To try it: WS_PROXY_MODEL=dictate-streaming-whisper when relaunching
 # wsproxy.py (with the zod primary up), or put
 # dictate-streaming-whisper in Dictate's Real-time model field.
@@ -27,7 +27,7 @@
 name: dictate-streaming-whisper
 pipeline:
   vad: silero-vad-ggml
-  transcription: whisper-large-v3
+  transcription: whisper-large
   llm: qwen3-0.6b
   streaming:
     transcription: true

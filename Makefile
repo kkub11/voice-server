@@ -185,7 +185,7 @@ down-gpu: ## Stop the GPU LocalAI. Run ON the GPU machine.
 
 models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must be up). Run ON the GPU machine.
 	@echo "Installing Whisper large-v3 on the GPU box..."
-	@docker exec localai /local-ai models install whisper-large-v3
+	@docker exec localai /local-ai models install whisper-large
 	@echo ""
 	@echo "Whisper done. The other pipelines come from 'make models'."
 	@echo "Nemotron needs the two manual GGUF downloads into"
