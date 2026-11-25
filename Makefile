@@ -115,6 +115,9 @@ logs: ## Follow localai + parakeet-api logs (Ctrl-C to stop).
 
 models: ## Install LocalAI gallery models; print manual Nemotron/PnC steps.
 	@echo "Installing LocalAI gallery models (container 'localai' must be up)..."
+	@docker exec localai /local-ai backends install whisper
+	@docker exec localai /local-ai backends install parakeet-cpp
+	@docker exec localai /local-ai backends install llama-cpp
 	@docker exec localai /local-ai models install silero-vad-ggml
 	@docker exec localai /local-ai models install parakeet-cpp-realtime_eou_120m-v1
 	@docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v3
@@ -185,6 +188,8 @@ down-gpu: ## Stop the GPU LocalAI. Run ON the GPU machine.
 
 models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must be up). Run ON the GPU machine.
 	@echo "Installing Whisper large-v3 on the GPU box..."
+	@docker exec localai /local-ai backends install whisper
+	@docker exec localai /local-ai backends install llama-cpp
 	@docker exec localai /local-ai models install whisper-large
 	@echo ""
 	@echo "Whisper done. The other pipelines come from 'make models'."
