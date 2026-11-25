@@ -1,0 +1,34 @@
+# GPU override for the streaming-dictation LocalAI (any GPU machine).
+#
+# The base docker-compose.yml is the CPU image and runs on any machine
+# (main local server, a laptop, a test box). On a machine with an
+# NVIDIA GPU, layer this override on top to use the GPU image and
+# expose the GPU to the container:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   # or: make up-gpu
+#
+# The container name, ports, volumes and pipeline YAMLs are unchanged
+# -- only the image and the GPU reservation differ -- so the same
+# `make models` and `make proxy` commands work on either. This is how
+# a fast remote server is built: same repo, same commands, GPU image.
+#
+# Prerequisite: the NVIDIA Container Toolkit installed so Docker can
+# see the GPU. Verify after starting: `docker exec localai nvidia-smi`
+# should list the GPU. Without the toolkit the container starts but
+# has no GPU and falls back to CPU (slow, like the base image).
+#
+# Note: this override is for a SECOND machine (the fast remote). The
+# main local server keeps the base CPU compose. Both serve the same
+# pipeline names so wsproxy's failover list works across them.
+
+services:
+  localai:
+    image: localai/localai:latest-gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

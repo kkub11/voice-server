@@ -1,0 +1,30 @@
+# Pipeline A2: Parakeet TDT v2 (English-only) streaming.
+#
+# Same shape as dictate-streaming-tdt (v3), but the v2 model:
+# English-only, and slightly more accurate on English (6.05% WER on
+# the Open ASR Leaderboard vs v3's 6.34%). Same 0.6B size and speed
+# as v3, same per-turn text (no live word-by-word deltas), same
+# server_vad turn detection. Punctuation: the model self-punctuates,
+# but in the LocalAI streaming path the punctuation tokens only
+# sometimes make it into the finished turn (same caveat as v3 --
+# see dictate-streaming-tdt.yaml). The batch provider (odin :8816,
+# TDT v2 via sherpa-onnx) is the reliable punctuating path.
+# No TTS stage: qwen3-tts-cpp-customvoice crashes on load.
+#
+# Install the model first (once):
+#   docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v2
+# To try it: WS_PROXY_MODEL=dictate-streaming-tdt-v2 when relaunching
+# wsproxy.py, or put dictate-streaming-tdt-v2 in Dictate's Real-time
+# model field (it overrides wsproxy for that phone). Dictate needs no
+# other change. The proxy's close-on-commit works the same here.
+name: dictate-streaming-tdt-v2
+pipeline:
+  vad: silero-vad-ggml
+  transcription: parakeet-cpp-tdt-0.6b-v2
+  llm: qwen3-0.6b
+  streaming:
+    transcription: true
+  turn_detection:
+    type: server_vad
+    # Silence window is the pipeline default; a mid-thought pause
+    # only splits the text into turns, it never ends the dictation.

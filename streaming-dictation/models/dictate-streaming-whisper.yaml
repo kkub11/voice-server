@@ -1,0 +1,37 @@
+# Pipeline W: Whisper large-v3 (GPU only) streaming.
+#
+# Whisper large-v3: 1.55B params, multilingual (99 languages incl.
+# Japanese), punctuates and capitalizes natively. It is an OFFLINE
+# model, so in a realtime pipeline it behaves like TDT/Nemotron --
+# text at pauses/turns, NOT word-by-word like EOU. It is far too
+# slow on odin's CPU (a 5 s turn would take 5+ s to transcribe);
+# on zod's RTX 4070 it is fast enough for dictation. This pipeline
+# is meant for the zod GPU LocalAI (see zod/), not odin.
+#
+# WER: 7.44% average on the Open ASR Leaderboard (worse than Parakeet
+# v2/v3 and Nemotron on English, but Whisper is more robust to accents
+# and noise, and it is the only one here that does Japanese).
+# Punctuation: native, and good -- Whisper's strong suit.
+#
+# UNTESTED in a realtime pipeline as of 2026-11-24. Whisper is a batch
+# transcriber; LocalAI calls it once per committed turn, so it should
+# deliver text at turn end like TDT does, but verify it transcribes a
+# turn before relying on it.
+#
+# Install the model first (once, on zod):
+#   docker exec localai-zod /local-ai models install whisper-large-v3
+# To try it: WS_PROXY_MODEL=dictate-streaming-whisper when relaunching
+# wsproxy.py (with the zod primary up), or put
+# dictate-streaming-whisper in Dictate's Real-time model field.
+# No TTS stage: qwen3-tts-cpp-customvoice crashes on load.
+name: dictate-streaming-whisper
+pipeline:
+  vad: silero-vad-ggml
+  transcription: whisper-large-v3
+  llm: qwen3-0.6b
+  streaming:
+    transcription: true
+  turn_detection:
+    type: server_vad
+    # Silence window is the pipeline default; a mid-thought pause
+    # only splits the text into turns, it never ends the dictation.
