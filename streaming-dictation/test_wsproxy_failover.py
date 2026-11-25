@@ -22,6 +22,10 @@ Checks, all against real sockets (no LocalAI needed):
     model first (on its server) even though it is not first.
  7. HTTP GET /v1/models via the proxy reaches the first reachable
     server in the list.
+ 8. Single-server mode (no FAILOVER / FAST_REMOTE_HOST) tries a
+    non-empty Dictate field before WS_PROXY_MODEL.
+ 9. Single-server mode falls back to WS_PROXY_MODEL when the field's
+    model cannot connect, rewriting session.update to the fallback.
 
 Run: python3 test_wsproxy_failover.py
 """
@@ -49,6 +53,10 @@ PROXY_PORT = 18104
 FAST_PORT2 = 18111
 MAIN_PORT2 = 18112
 PROXY_PORT2 = 18114
+MAIN_PORT3 = 18122
+PROXY_PORT3 = 18124
+MAIN_PORT4 = 18132
+PROXY_PORT4 = 18134
 
 ok = True
 
@@ -68,7 +76,7 @@ def ws_handshake_response(key):
             f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode()
 
 
-def fake_upstream_server(port, results, stop):
+def fake_upstream_server(port, results, stop, reject_model=None):
     """Minimal upstream: WS handshake on /v1/realtime (records the
     ?model= and the first session.update's transcription model), and
     HTTP /v1/models. Accepts in a loop."""
@@ -84,12 +92,12 @@ def fake_upstream_server(port, results, stop):
             continue
         except OSError:
             break
-        threading.Thread(target=_handle_one, args=(conn, results),
+        threading.Thread(target=_handle_one, args=(conn, results, reject_model),
                          daemon=True).start()
     srv.close()
 
 
-def _handle_one(conn, results):
+def _handle_one(conn, results, reject_model=None):
     try:
         conn.settimeout(5)
         data = b""
@@ -107,6 +115,11 @@ def _handle_one(conn, results):
                 k, v = line.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
         if headers.get("upgrade", "").lower() == "websocket":
+            if reject_model and f"model={reject_model}" in path:
+                results["rejected_ws_model"] = path
+                conn.sendall(b"HTTP/1.1 500 Internal Server Error\r\n"
+                             b"Content-Length: 0\r\n\r\n")
+                return
             results["ws_model"] = path
             conn.sendall(ws_handshake_response(headers.get("sec-websocket-key", "")))
             # Read one WS frame (the session.update) to record its model.
@@ -235,6 +248,13 @@ def main():
     check("no FAILOVER / FAST_REMOTE -> single upstream",
           wsproxy.failover_candidates() ==
           [("dictate-streaming", HOST, MAIN_PORT)])
+    check("single-server field is tried before WS_PROXY_MODEL",
+          wsproxy.failover_candidates("dictate-streaming-tdt") ==
+          [("dictate-streaming-tdt", HOST, MAIN_PORT),
+           ("dictate-streaming", HOST, MAIN_PORT)])
+    check("single-server field equal to MODEL stays single",
+          wsproxy.failover_candidates("dictate-streaming") ==
+          [("dictate-streaming", HOST, MAIN_PORT)])
     wsproxy.FAST_REMOTE_HOST, wsproxy.FAST_REMOTE_PORT = HOST, FAST_PORT
     check("FAST_REMOTE_HOST set -> [(MODEL, fast), (MODEL, main)]",
           wsproxy.failover_candidates() ==
@@ -335,6 +355,73 @@ def main():
             out = ""
         stop2.set()
         stop3.set()
+
+    # --- integration: single-server field wins -------------------------
+    # No failover list and no fast remote. WS_PROXY_MODEL is EOU, but
+    # the Dictate field names TDT, so TDT must be the upstream model.
+    results4 = {}
+    stop4 = threading.Event()
+    t4 = threading.Thread(target=fake_upstream_server,
+                          args=(MAIN_PORT3, results4, stop4), daemon=True)
+    t4.start()
+    time.sleep(0.2)
+    proc = run_proxy({
+        "WS_PROXY_FAILOVER": "",
+        "FAST_REMOTE_HOST": "",
+        "WS_PROXY_UPSTREAM_PORT": str(MAIN_PORT3),
+    }, PROXY_PORT3)
+    try:
+        resp, _ = ws_session("dictate-streaming-tdt", PROXY_PORT3)
+        check("proxy answers WS handshake in single-server mode",
+              resp.startswith(b"HTTP/1.1 101"), f"got {resp[:40]!r}")
+        time.sleep(0.3)
+        check("single-server field wins over WS_PROXY_MODEL",
+              results4.get("ws_model", "").endswith("?model=dictate-streaming-tdt")
+              and results4.get("session_update_model") == "dictate-streaming-tdt",
+              f"got {results4!r}")
+    finally:
+        proc.terminate()
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out = ""
+        stop4.set()
+
+    # --- integration: single-server fallback to WS_PROXY_MODEL ---------
+    # Same setup, but the upstream rejects the field's model at the WS
+    # handshake. The proxy must fall back to WS_PROXY_MODEL and rewrite
+    # session.update to that fallback model.
+    results5 = {}
+    stop5 = threading.Event()
+    t5 = threading.Thread(target=fake_upstream_server,
+                          args=(MAIN_PORT4, results5, stop5,
+                                "dictate-streaming-tdt"), daemon=True)
+    t5.start()
+    time.sleep(0.2)
+    proc = run_proxy({
+        "WS_PROXY_FAILOVER": "",
+        "FAST_REMOTE_HOST": "",
+        "WS_PROXY_UPSTREAM_PORT": str(MAIN_PORT4),
+    }, PROXY_PORT4)
+    try:
+        resp, _ = ws_session("dictate-streaming-tdt", PROXY_PORT4)
+        check("proxy answers WS handshake after single-server fallback",
+              resp.startswith(b"HTTP/1.1 101"), f"got {resp[:40]!r}")
+        time.sleep(0.3)
+        check("single-server fallback uses WS_PROXY_MODEL",
+              results5.get("rejected_ws_model", "").endswith("?model=dictate-streaming-tdt")
+              and results5.get("ws_model", "").endswith("?model=dictate-streaming")
+              and results5.get("session_update_model") == "dictate-streaming",
+              f"got {results5!r}")
+    finally:
+        proc.terminate()
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out = ""
+        stop5.set()
 
     print("\nALL PASS" if ok else "\nSOME FAILED")
     return 0 if ok else 1

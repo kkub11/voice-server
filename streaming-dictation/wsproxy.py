@@ -98,10 +98,12 @@ Env overrides: WS_PROXY_LISTEN_PORT (default 8084),
   tried first (entries with that model, in list order), then the
   rest of the list. Shorthand: if WS_PROXY_FAILOVER is unset but
   FAST_REMOTE_HOST is set (FAST_REMOTE_PORT, default 8081), the list
-  is [(MODEL, fast-remote), (MODEL, main-local)]. "Fast remote" is
-  the second, faster machine (a laptop with a GPU); "main local" is
-  this box's own LocalAI. WS_PROXY_FAILOVER_TIMEOUT (default 2 s) is
-  the per-server probe timeout.
+  is [(MODEL, fast-remote), (MODEL, main-local)]. If neither is set,
+  single-server mode tries a non-empty Dictate field on the main
+  local server first, with MODEL as the fallback/default. "Fast
+  remote" is the second, faster machine (a laptop with a GPU);
+  "main local" is this box's own LocalAI. WS_PROXY_FAILOVER_TIMEOUT
+  (default 2 s) is the per-server probe timeout.
 """
 
 import base64
@@ -138,7 +140,8 @@ MODEL = os.environ.get("WS_PROXY_MODEL", "dictate-streaming")
 #
 # Shorthand: if WS_PROXY_FAILOVER is unset but FAST_REMOTE_HOST is set,
 # the list is [(MODEL, fast-remote), (MODEL, main-local)]. If neither
-# is set, behaviour is exactly as before (single upstream, MODEL).
+# is set, single-server mode tries a non-empty Dictate field on the
+# main local server first, then MODEL as the fallback/default.
 # WS_PROXY_FAILOVER_TIMEOUT (default 2 s) is the per-server probe timeout.
 FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))
 FAST_REMOTE_HOST = os.environ.get("FAST_REMOTE_HOST", "")
@@ -170,13 +173,26 @@ def parse_failover(raw):
     return out
 
 
-def failover_candidates():
-    """[(model, host, port)] in try order, from the env config."""
+def failover_candidates(field_model=""):
+    """[(model, host, port)] in try order, from the env config.
+
+    With an explicit WS_PROXY_FAILOVER list, the list is returned as
+    configured and order_candidates() moves the Dictate field's model
+    first. With only FAST_REMOTE_HOST, the shorthand list is MODEL on
+    the fast remote, then MODEL on main local. With neither set,
+    single-server mode synthesizes the field as a candidate on main
+    local so the Dictate setting wins there too; MODEL remains the
+    fallback if that candidate cannot connect, and the default when
+    the field is blank.
+    """
     raw = os.environ.get("WS_PROXY_FAILOVER", "")
     if raw.strip():
         return parse_failover(raw)
     if FAST_REMOTE_HOST:
         return [(MODEL, FAST_REMOTE_HOST, FAST_REMOTE_PORT),
+                (MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
+    if field_model and field_model != MODEL:
+        return [(field_model, UPSTREAM_HOST, UPSTREAM_PORT),
                 (MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
     return [(MODEL, UPSTREAM_HOST, UPSTREAM_PORT)]
 
@@ -620,7 +636,7 @@ def ws_connect_upstream(extra_headers, field_model):
     remote delays the fallback by at most ~2 s. If a candidate
     connects but then fails the handshake (rare race), the next
     candidate is tried."""
-    candidates = order_candidates(failover_candidates(), field_model)
+    candidates = order_candidates(failover_candidates(field_model), field_model)
     last_exc = None
     for model, host, port in candidates:
         try:

@@ -210,7 +210,9 @@ What it does:
   `dictate-streaming-whisper@<fast-remote-ip>:8081, dictate-streaming@127.0.0.1:8081`).
   Dictate's Real-time model field names the phone's preferred model
   and is tried first (entries with that model, in list order), then
-  the rest of the list. The bigger models live only on the fast
+  the rest of the list. In single-server mode the field is tried on
+  the main local server first, with `WS_PROXY_MODEL` as the fallback
+  if it cannot connect. The bigger models live only on the fast
   remote server, so they are only used when it is up; the main local
   server carries the smaller ones as the fallback. The chosen
   (model, server) is logged per session
@@ -366,11 +368,12 @@ button is available too.
   is the real check.)
 - **Streaming provider** ("main-streaming"): custom server, base
   URL `http://<main-server-IP>:8084/v1/`, real-time streaming ON,
-  real-time model `dictate-streaming-nemotron` (the proxy overrides
-  this with `WS_PROXY_MODEL` anyway). Live word-by-word text only
-  appears when Dictate itself is the active keyboard — with the
-  floating button over another keyboard, live text is deliberately
-  held back (Dictate issue #456).
+  real-time model `dictate-streaming-nemotron` (your preferred
+  pipeline; wsproxy tries it first and falls back to
+  `WS_PROXY_MODEL` or the failover list if it cannot connect). Live
+  word-by-word text only appears when Dictate itself is the active
+  keyboard — with the floating button over another keyboard, live
+  text is deliberately held back (Dictate issue #456).
 - **Rewording provider** (for the "Fix Grammar" etc. buttons):
   add a *separate* custom provider pointing at an OpenAI-compatible
   **chat** endpoint — here, OmniRoute on the same host:
