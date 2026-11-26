@@ -366,6 +366,8 @@ def log_upstream_event(payload, state=None):
     # it is ignored -- the safe failure is Dictate waiting out its
     # tail wait, not a lost turn.
     if state is not None:
+        if msg.get("item_id"):
+            state["last_item_id"] = msg["item_id"]
         if t.endswith("transcription.completed"):
             if state.get("awaiting_completed"):
                 state["turn_completed"] = True
@@ -679,7 +681,8 @@ def handle_ws(client_sock, headers):
         f"{field_model!r}; using {chosen_model!r}@{up_host}:{up_port}")
     session_state = {"event_seq": 0, "first_delta_logged": False,
                      "turn_completed": False, "awaiting_completed": False,
-                     "close_sent": False}
+                     "close_sent": False, "last_item_id": None,
+                     "keepalive_started": False}
     # Session audio recording (2026-11-23): accumulate every audio
     # append into one PCM buffer; written to a WAV at session end.
     rec_pcm = bytearray()
@@ -717,6 +720,39 @@ def handle_ws(client_sock, headers):
         except OSError:
             pass
 
+    def tail_keepalive():
+        # Runs after a stop-commit with the turn still open. Dictate
+        # ends its tail wait after 1.2 s without text and counts that
+        # silence as a complete transcript, so a final turn still
+        # decoding at the stop is silently lost (2026-11-26: Whisper
+        # needed >1 s for the last segment; Dictate closed and no
+        # batch fallback fired). Every text event renews Dictate's
+        # idle window, so send empty deltas (no text added) until the
+        # real completed lands. Bounded at 7.5 s: past that, Dictate's
+        # 8 s cap marks the tail incomplete and its batch fallback
+        # rescues the dictation instead of truncating it.
+        deadline = time.time() + 7.5
+        while time.time() < deadline:
+            if session_state.get("turn_completed") or \
+                    session_state.get("close_sent"):
+                return
+            time.sleep(0.8)
+            if session_state.get("turn_completed") or \
+                    session_state.get("close_sent"):
+                return
+            session_state["event_seq"] += 1
+            ev = {"type": "conversation.item.input_audio_transcription.delta",
+                  "item_id": session_state.get("last_item_id") or "item_keepalive",
+                  "content_index": 0, "delta": "",
+                  "event_id": f"event_{session_state['event_seq']:04d}"}
+            try:
+                with client_lock:
+                    client.send_frame(1, json.dumps(ev).encode(), mask=False)
+            except OSError:
+                return
+        log("TAIL-KEEPALIVE: no completed within 7.5s; Dictate's cap "
+            "and batch fallback take over")
+
     def client_observe(payload):
         try:
             msg = json.loads(payload.decode("utf-8"))
@@ -743,8 +779,12 @@ def handle_ws(client_sock, headers):
                 # first; the close then ends Dictate's tail wait.
                 threading.Timer(0.05, close_session_at_once).start()
             else:
-                log("COMMIT with turn still open: leaving the tail "
-                    "wait to Dictate (last words still decoding)")
+                log("COMMIT with turn still open: tail keepalive on "
+                    "(last words still decoding)")
+                if not session_state.get("keepalive_started"):
+                    session_state["keepalive_started"] = True
+                    threading.Thread(target=tail_keepalive,
+                                     daemon=True).start()
 
     def client_rewrite(payload):
         return rewrite_session_update(payload, chosen_model)

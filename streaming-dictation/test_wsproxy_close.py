@@ -22,6 +22,10 @@ Three scenarios, each a fresh proxy + fake upstream on its own ports:
     commit -> NO close; then turn 2 ends properly (speech_stopped +
     committed + completed) and a second commit -> close. The late
     completed must not count for the turn that is already open.
+ 5. keepalive (2026-11-26): turn still open at the stop-commit ->
+    the client must receive empty-delta keepalives (they renew
+    Dictate's 1.2 s tail idle window while the last turn decodes)
+    and no close frame.
 """
 import base64
 import hashlib
@@ -188,6 +192,7 @@ def run_scenario(name, up_port, proxy_port, scenario):
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     close_seen = False
     close_second = False
+    keepalive_seen = False
     try:
         for _ in range(50):
             try:
@@ -198,7 +203,7 @@ def run_scenario(name, up_port, proxy_port, scenario):
                 time.sleep(0.1)
         else:
             print(f"FAIL [{name}]: proxy never started listening")
-            return False, False, False
+            return False, False, False, False
 
         sock = socket.create_connection((HOST, proxy_port), timeout=15)
         key = base64.b64encode(b"0123456789abcdef").decode()
@@ -216,6 +221,7 @@ def run_scenario(name, up_port, proxy_port, scenario):
         ws.send_frame(1, json.dumps(SESSION_UPDATE).encode(), mask=True)
         # wait for the upstream events to flow back (delta/completed)
         expect_frames = {"close": 4, "new-turn": 5, "open": 1,
+                         "keepalive": 1,
                          "late-completed": 6}[scenario]
         deadline = time.time() + 5
         got = 0
@@ -234,12 +240,20 @@ def run_scenario(name, up_port, proxy_port, scenario):
         sock.settimeout(2)
         while time.time() < deadline:
             try:
-                opcode, _ = ws.read_frame()
+                opcode, payload = ws.read_frame()
             except (ConnectionError, OSError, socket.timeout):
                 break
             if opcode == 8:
                 close_seen = True
                 break
+            if opcode == 1:
+                try:
+                    ev = json.loads(payload.decode())
+                except Exception:
+                    continue
+                if ev.get("type", "").endswith("transcription.delta") \
+                        and ev.get("delta") == "":
+                    keepalive_seen = True
         if scenario == "late-completed" and not close_seen:
             # turn 2 has now ended properly (the upstream sent its
             # end events when it saw the first commit); a second
@@ -272,8 +286,8 @@ def run_scenario(name, up_port, proxy_port, scenario):
         if name == "close" and "CLOSE-ON-COMMIT" not in out:
             print(f"FAIL [{name}]: proxy log missing CLOSE-ON-COMMIT")
             print(out)
-            return close_seen, upstream_got["commit"], close_second
-    return close_seen, upstream_got["commit"], close_second
+            return close_seen, upstream_got["commit"], close_second, keepalive_seen
+    return close_seen, upstream_got["commit"], close_second, keepalive_seen
 
 
 def main():
@@ -285,21 +299,26 @@ def main():
               + (f" -- {detail}" if detail and not cond else ""))
         ok = ok and cond
 
-    close_seen, commit_up, _ = run_scenario("close", 18091, 18094, "close")
+    close_seen, commit_up, _, _ = run_scenario("close", 18091, 18094, "close")
     check("close when turn completed", close_seen)
     check("commit still forwarded upstream", commit_up)
 
-    close_seen, _, _ = run_scenario("open", 18092, 18095, "open")
+    close_seen, _, _, _ = run_scenario("open", 18092, 18095, "open")
     check("no close when turn still open", not close_seen)
 
-    close_seen, _, _ = run_scenario("new-turn", 18093, 18096, "new-turn")
+    close_seen, _, _, _ = run_scenario("new-turn", 18093, 18096, "new-turn")
     check("no close when a new turn started", not close_seen)
 
-    first_close, _, second_close = run_scenario(
+    first_close, _, second_close, _ = run_scenario(
         "late-completed", 18097, 18099, "late-completed")
     check("no close on a late completed for the previous turn",
           not first_close)
     check("close once the open turn completes", second_close)
+
+    close_seen, _, _, keepalive_seen = run_scenario(
+        "keepalive", 18101, 18102, "keepalive")
+    check("keepalive deltas sent while turn open", keepalive_seen)
+    check("no close during keepalive", not close_seen)
 
     print("\nALL PASS" if ok else "\nSOME FAILED")
     return 0 if ok else 1
