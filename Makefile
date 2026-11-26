@@ -118,6 +118,7 @@ models: ## Install LocalAI gallery models; print manual Nemotron/PnC steps.
 	@docker exec localai /local-ai backends install whisper
 	@docker exec localai /local-ai backends install parakeet-cpp
 	@docker exec localai /local-ai backends install llama-cpp
+	@docker exec localai chown -R localai:localai /backends
 	@docker exec localai /local-ai models install silero-vad-ggml
 	@docker exec localai /local-ai models install parakeet-cpp-realtime_eou_120m-v1
 	@docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v3
@@ -186,10 +187,20 @@ down-gpu: ## Stop the GPU LocalAI. Run ON the GPU machine.
 	@cd $(STREAMING_DIR) && docker compose -f docker-compose.yml -f docker-compose.gpu.yml down
 	@echo "Stopped the GPU LocalAI. (wsproxy on the main server will fall back to its own LocalAI.)"
 
+# models-gpu first removes any cpu-* backend variants: a volume created
+# by the CPU container keeps cpu variants, and 'backends install' then
+# skips the backend as already installed, so the GPU server (capability
+# nvidia-cuda-12) reports "backend not found". The chown matters too:
+# installs run as root via docker exec and create root-only dirs the
+# server user cannot read.
 models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must be up). Run ON the GPU machine.
 	@echo "Installing Whisper large-v3 on the GPU box..."
+	@docker exec localai sh -c 'rm -rf /backends/whisper /backends/cpu-whisper /backends/llama-cpp /backends/cpu-llama-cpp /backends/parakeet-cpp /backends/cpu-parakeet-cpp /backends/nemo-speech-cpp /backends/cpu-nemo-speech-cpp'
 	@docker exec localai /local-ai backends install whisper
 	@docker exec localai /local-ai backends install llama-cpp
+	@docker exec localai /local-ai backends install parakeet-cpp
+	@docker exec localai /local-ai backends install nemo-speech-cpp
+	@docker exec localai chown -R localai:localai /backends
 	@docker exec localai /local-ai models install whisper-large
 	@echo ""
 	@echo "Whisper done. The other pipelines come from 'make models'."
