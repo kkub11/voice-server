@@ -29,6 +29,10 @@ Three scenarios, each a fresh proxy + fake upstream on its own ports:
  6. eou-no-keepalive: the same open-turn stop on the EOU pipeline
     (`dictate-streaming`) must receive no keepalive, preserving
     Dictate's own tail-wait behavior for EOU.
+ 7. nemotron-order (2026-11-26): Nemotron finalizes as committed ->
+    delta -> completed. The final delta must not reopen the turn:
+    a stop-commit after that completed must close at once, not
+    start the tail keepalive.
 """
 import base64
 import copy
@@ -121,7 +125,20 @@ def run_scenario(name, up_port, proxy_port, scenario,
                 except Exception:
                     continue
                 if msg.get("type") == "session.update":
-                    if scenario == "late-completed":
+                    if scenario == "nemotron-order":
+                        # Nemotron's finalize order: the turn commits,
+                        # THEN its final delta and completed arrive.
+                        for ev in (
+                            {"type": "input_audio_buffer.speech_started"},
+                            {"type": "input_audio_buffer.speech_stopped"},
+                            {"type": "input_audio_buffer.committed"},
+                            {"type": "conversation.item.input_audio_transcription.delta",
+                             "delta": "faster", "event_id": "event_TODO"},
+                            {"type": "conversation.item.input_audio_transcription.completed",
+                             "transcript": "faster"},
+                        ):
+                            send_ev(ws, ev)
+                    elif scenario == "late-completed":
                         # The 2026-11-19 incident, replayed: turn 1
                         # ends, turn 2 starts, THEN turn 1's completed
                         # arrives (late -- transcription lags the VAD).
@@ -229,6 +246,7 @@ def run_scenario(name, up_port, proxy_port, scenario,
         # wait for the upstream events to flow back (delta/completed)
         expect_frames = {"close": 4, "new-turn": 5, "open": 1,
                          "keepalive": 1, "eou-no-keepalive": 1,
+                         "nemotron-order": 5,
                          "late-completed": 6}[scenario]
         deadline = time.time() + 5
         got = 0
@@ -332,6 +350,12 @@ def main():
         model="dictate-streaming")
     check("no keepalive deltas for EOU", not keepalive_seen)
     check("no close for EOU open turn", not close_seen)
+
+    close_seen, _, _, keepalive_seen = run_scenario(
+        "nemotron-order", 18105, 18106, "nemotron-order")
+    check("close after Nemotron-order completed", close_seen)
+    check("no keepalive after Nemotron-order completed",
+          not keepalive_seen)
 
     print("\nALL PASS" if ok else "\nSOME FAILED")
     return 0 if ok else 1

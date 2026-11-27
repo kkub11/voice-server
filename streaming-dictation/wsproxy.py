@@ -372,18 +372,30 @@ def log_upstream_event(payload, state=None):
     # (`awaiting_completed`). A completed with no ended turn behind
     # it is ignored -- the safe failure is Dictate waiting out its
     # tail wait, not a lost turn.
+    #
+    # A delta after the audio ended is finalization output, not new
+    # speech: Nemotron emits committed -> delta -> completed, so the
+    # delta must not clear `awaiting_completed` or the completed
+    # that follows is ignored and a later stop wrongly starts the
+    # tail keepalive. New speech is signaled by speech_started,
+    # which is what reopens the turn (and preserves the 2026-11-19
+    # late-completed guard).
     if state is not None:
         if msg.get("item_id"):
             state["last_item_id"] = msg["item_id"]
         if t.endswith("transcription.completed"):
             if state.get("awaiting_completed"):
                 state["turn_completed"] = True
+                state["awaiting_completed"] = False
         elif t in ("input_audio_buffer.speech_stopped",
                    "input_audio_buffer.committed"):
             state["awaiting_completed"] = True
-        elif t.endswith("transcription.delta") or t == "input_audio_buffer.speech_started":
+        elif t == "input_audio_buffer.speech_started":
             state["turn_completed"] = False
             state["awaiting_completed"] = False
+        elif t.endswith("transcription.delta"):
+            if not state.get("awaiting_completed"):
+                state["turn_completed"] = False
     if t.endswith("transcription.delta"):
         if state is not None and not state.get("first_delta_logged"):
             state["first_delta_logged"] = True
