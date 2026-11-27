@@ -81,6 +81,10 @@ def fake_upstream_client(sock):
                           f"Sec-WebSocket-Accept: {ws_accept(headers['sec-websocket-key'])}\r\n\r\n").encode())
             ws = WSConn(sock)
             sock.settimeout(10)
+            # LocalAI announces the session before reading client
+            # events; wsproxy commits the candidate at this point.
+            ws.send_frame(1, json.dumps(
+                {"type": "session.created", "event_id": "event_TODO"}).encode())
             got_update = False
             while True:
                 try:
@@ -169,7 +173,7 @@ def fake_dictate_client():
         {"type": "input_audio_buffer.append",
          "audio": base64.b64encode(b"\x00\x01" * 2400).decode()}).encode(), mask=True)
     deadline = time.time() + 8
-    while time.time() < deadline and len(results["client_events"]) < 3:
+    while time.time() < deadline and len(results["client_events"]) < 4:
         try:
             opcode, payload = ws.read_frame()
         except (ConnectionError, OSError, socket.timeout):
@@ -237,7 +241,7 @@ def main():
         check("delta reached client", len(deltas) == 1 and deltas[0].get("delta") == "hello ",
               f"events: {results['client_events']}")
         check("delta event_id rewritten unique", len(deltas) == 1
-              and deltas[0].get("event_id") == "event_0001",
+              and deltas[0].get("event_id") == "event_0002",
               f"delta event_id: {deltas[0].get('event_id') if deltas else None}")
         check("completed reached client", len(completed) == 1
               and completed[0].get("transcript") == "hello world")
@@ -254,8 +258,8 @@ def main():
                      if e.get("type") == "error"
                      and e.get("error", {}).get("code") == "session_update_error"]
         check("surviving error event_id rewritten", len(surviving) == 1
-              and surviving[0].get("event_id") == "event_0002"
-              and surviving[0].get("error", {}).get("event_id") == "event_0002",
+              and surviving[0].get("event_id") == "event_0003"
+              and surviving[0].get("error", {}).get("event_id") == "event_0003",
               f"surviving error: {surviving}")
         check("HTTP /v1/models proxied", models.get("data", [{}])[0].get("id") == "dictate-streaming",
               f"got: {models}")

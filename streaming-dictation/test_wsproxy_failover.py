@@ -23,6 +23,11 @@ Checks, all against real sockets (no LocalAI needed):
  7. A field naming a later list entry wins over the first entry.
  8. When the field's candidate cannot connect, wsproxy falls back
     to the next list candidate and rewrites session.update.
+ 9. A field model with no list entry is tried on each list host; a
+    host that errors before session.created falls through to the
+    next host, and the field model is used unrewritten.
+10. When no host accepts the unlisted field model, wsproxy falls
+    back to the configured list and rewrites session.update.
 
 Run: python3 test_wsproxy_failover.py
 """
@@ -54,6 +59,12 @@ MAIN_PORT3 = 18122
 PROXY_PORT3 = 18124
 MAIN_PORT4 = 18132
 PROXY_PORT4 = 18134
+FAST_PORT5 = 18141
+MAIN_PORT5 = 18142
+PROXY_PORT5 = 18144
+FAST_PORT6 = 18151
+MAIN_PORT6 = 18152
+PROXY_PORT6 = 18154
 
 ok = True
 
@@ -73,10 +84,13 @@ def ws_handshake_response(key):
             f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode()
 
 
-def fake_upstream_server(port, results, stop, reject_model=None):
+def fake_upstream_server(port, results, stop, reject_model=None,
+                         error_models=()):
     """Minimal upstream: WS handshake on /v1/realtime (records the
     ?model= and the first session.update's transcription model), and
-    HTTP /v1/models. Accepts in a loop."""
+    HTTP /v1/models. Accepts in a loop. error_models handshakes fine
+    but sends a model_load_error before session.created, like LocalAI
+    with a missing model."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, port))
@@ -89,12 +103,23 @@ def fake_upstream_server(port, results, stop, reject_model=None):
             continue
         except OSError:
             break
-        threading.Thread(target=_handle_one, args=(conn, results, reject_model),
+        threading.Thread(target=_handle_one,
+                         args=(conn, results, reject_model, error_models),
                          daemon=True).start()
     srv.close()
 
 
-def _handle_one(conn, results, reject_model=None):
+def _send_ws_text(conn, payload):
+    if len(payload) < 126:
+        hdr = bytes([0x81, len(payload)])
+    elif len(payload) < 65536:
+        hdr = bytes([0x81, 126]) + len(payload).to_bytes(2, "big")
+    else:
+        hdr = bytes([0x81, 127]) + len(payload).to_bytes(8, "big")
+    conn.sendall(hdr + payload)
+
+
+def _handle_one(conn, results, reject_model=None, error_models=()):
     try:
         conn.settimeout(5)
         data = b""
@@ -117,8 +142,19 @@ def _handle_one(conn, results, reject_model=None):
                 conn.sendall(b"HTTP/1.1 500 Internal Server Error\r\n"
                              b"Content-Length: 0\r\n\r\n")
                 return
-            results["ws_model"] = path
             conn.sendall(ws_handshake_response(headers.get("sec-websocket-key", "")))
+            if any(f"model={m}" in path for m in error_models):
+                results.setdefault("errored_ws_models", []).append(path)
+                _send_ws_text(conn, json.dumps(
+                    {"type": "error",
+                     "error": {"type": "invalid_request_error",
+                               "code": "model_load_error",
+                               "message": "Failed to load pipeline models",
+                               "param": "", "event_id": "event_TODO"}}).encode())
+                return
+            results["ws_model"] = path
+            _send_ws_text(conn, json.dumps(
+                {"type": "session.created", "event_id": "event_TODO"}).encode())
             # Read one WS frame (the session.update) to record its model.
             try:
                 buf = b""
@@ -253,6 +289,10 @@ def main():
           wsproxy.order_candidates(dup, "tdt") ==
           [("tdt", HOST, FAST_PORT), ("tdt", HOST, MAIN_PORT),
            ("whisper", HOST, FAST_PORT), ("eou", HOST, MAIN_PORT)])
+    check("order_candidates tries an unlisted field model on each host",
+          wsproxy.order_candidates(dup, "field-model") ==
+          [("field-model", HOST, FAST_PORT), ("field-model", HOST, MAIN_PORT)]
+          + dup)
 
     # --- integration: failover list, fast remote down ------------------
     # Only the MAIN server is up (fast remote port is dead). The list
@@ -408,6 +448,89 @@ def main():
             proc.kill()
             out = ""
         stop5.set()
+
+    # --- integration: unlisted field model, first host errors -------
+    # The field names a model with no list entry. wsproxy must try it
+    # on the fast host first; that host errors before session.created
+    # (missing model), so the field model must land on the main host,
+    # unrewritten.
+    results6 = {}
+    stop6 = threading.Event()
+    t6 = threading.Thread(target=fake_upstream_server,
+                          args=(FAST_PORT5, results6, stop6, None,
+                                ("field-model",)), daemon=True)
+    t6.start()
+    results7 = {}
+    stop7 = threading.Event()
+    t7 = threading.Thread(target=fake_upstream_server,
+                          args=(MAIN_PORT5, results7, stop7), daemon=True)
+    t7.start()
+    time.sleep(0.2)
+    proc = run_proxy({
+        "WS_PROXY_FAILOVER":
+            f"dictate-streaming-whisper@{HOST}:{FAST_PORT5},"
+            f"dictate-streaming@{HOST}:{MAIN_PORT5}",
+    }, PROXY_PORT5)
+    try:
+        resp, _ = ws_session("field-model", PROXY_PORT5)
+        check("proxy answers WS handshake for unlisted field model",
+              resp.startswith(b"HTTP/1.1 101"), f"got {resp[:40]!r}")
+        time.sleep(0.3)
+        check("unlisted field model falls through pre-created error to next host",
+              results6.get("errored_ws_models", [""])[0].endswith("?model=field-model")
+              and results7.get("ws_model", "").endswith("?model=field-model")
+              and results7.get("session_update_model") == "field-model",
+              f"fast={results6!r} main={results7!r}")
+    finally:
+        proc.terminate()
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out = ""
+        stop6.set()
+        stop7.set()
+
+    # --- integration: unlisted field model nowhere ------------------
+    # Both hosts error on the field model before session.created, so
+    # wsproxy must fall back to the configured list (whisper on fast)
+    # and rewrite session.update to the fallback model.
+    results8 = {}
+    stop8 = threading.Event()
+    t8 = threading.Thread(target=fake_upstream_server,
+                          args=(FAST_PORT6, results8, stop8, None,
+                                ("field-model",)), daemon=True)
+    t8.start()
+    results9 = {}
+    stop9 = threading.Event()
+    t9 = threading.Thread(target=fake_upstream_server,
+                          args=(MAIN_PORT6, results9, stop9, None,
+                                ("field-model",)), daemon=True)
+    t9.start()
+    time.sleep(0.2)
+    proc = run_proxy({
+        "WS_PROXY_FAILOVER":
+            f"dictate-streaming-whisper@{HOST}:{FAST_PORT6},"
+            f"dictate-streaming@{HOST}:{MAIN_PORT6}",
+    }, PROXY_PORT6)
+    try:
+        resp, _ = ws_session("field-model", PROXY_PORT6)
+        check("proxy answers WS handshake when field model is nowhere",
+              resp.startswith(b"HTTP/1.1 101"), f"got {resp[:40]!r}")
+        time.sleep(0.3)
+        check("unlisted field model nowhere falls back to the list",
+              results8.get("ws_model", "").endswith("?model=dictate-streaming-whisper")
+              and results8.get("session_update_model") == "dictate-streaming-whisper",
+              f"fast={results8!r} main={results9!r}")
+    finally:
+        proc.terminate()
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out = ""
+        stop8.set()
+        stop9.set()
 
     print("\nALL PASS" if ok else "\nSOME FAILED")
     return 0 if ok else 1

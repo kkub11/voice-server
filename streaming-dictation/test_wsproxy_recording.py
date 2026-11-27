@@ -44,6 +44,8 @@ def fake_upstream(port, stop):
                       f"Sec-WebSocket-Accept: {ws_accept(headers['sec-websocket-key'])}\r\n\r\n").encode())
         ws = WSConn(sock)
         sock.settimeout(5)
+        ws.send_frame(1, json.dumps(
+            {"type": "session.created", "event_id": "event_TODO"}).encode())
         while not stop.is_set():
             try:
                 opcode, _ = ws.read_frame()

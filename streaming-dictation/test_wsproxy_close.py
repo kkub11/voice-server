@@ -111,6 +111,7 @@ def run_scenario(name, up_port, proxy_port, scenario,
                           f"Sec-WebSocket-Accept: {ws_accept(headers['sec-websocket-key'])}\r\n\r\n").encode())
             ws = WSConn(sock)
             sock.settimeout(10)
+            send_ev(ws, {"type": "session.created", "event_id": "event_TODO"})
             while not stop_upstream.is_set():
                 try:
                     opcode, payload = ws.read_frame()

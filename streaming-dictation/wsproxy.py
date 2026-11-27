@@ -96,6 +96,9 @@ Env overrides: WS_PROXY_LISTEN_PORT (default 8084),
   order and skips a candidate whose server is down. The Dictate
   Real-time model field remains the first choice: entries with that
   model are tried first (in list order), then the rest of the list.
+  A field model with no list entry is tried on each distinct host in
+  the list first. A candidate commits only at session.created; one
+  that errors before that falls through to the next candidate.
 """
 
 import base64
@@ -104,6 +107,7 @@ import http.client
 import json
 import os
 import random
+import select
 import socket
 import struct
 import sys
@@ -122,6 +126,8 @@ LISTEN_PORT = int(os.environ.get("WS_PROXY_LISTEN_PORT", "8084"))
 # are moved first, then the rest of the list is tried in order. The
 # same model may appear on more than one host; matching entries keep
 # their list order, so the GPU box is tried before the local server.
+# A field model with no list entry is tried on each distinct host in
+# the list (same order) before the configured candidates.
 DEFAULT_FAILOVER = (
     "dictate-streaming-whisper@192.168.1.236:8081, "
     "dictate-streaming-nemotron@192.168.1.236:8081, "
@@ -132,6 +138,11 @@ DEFAULT_FAILOVER = (
     "dictate-streaming@127.0.0.1:8081"
 )
 FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))
+# A candidate is only committed once its upstream reaches
+# session.created (LocalAI accepts the WS handshake before validating
+# the model, so a missing model errors after the handshake). Warmup
+# on a cold GPU model has taken ~14 s, hence the generous bound.
+CREATED_TIMEOUT = float(os.environ.get("WS_PROXY_CREATED_TIMEOUT", "30"))
 
 # EOU keeps the pre-keepalive stop behavior: its live word deltas
 # already renew Dictate's tail window while text is arriving, and
@@ -553,15 +564,22 @@ def _tcp_reachable(host, port, timeout):
 def order_candidates(candidates, field_model):
     """Reorder the failover list so entries matching the Dictate
     field's model come first (the phone's preferred model), then the
-    rest of the list in configured order. A blank/unknown field leaves
-    the list as configured. This is what makes the Dictate setting the
-    fast, best model the user wants, with wsproxy falling back to the
-    configured models when that one is not available."""
+    rest of the list in configured order. A field model with no list
+    entry is tried on each distinct host in the list, in list order,
+    before the configured candidates: the field is the user's explicit
+    choice, and the list supplies the hosts to try it on. A blank
+    field leaves the list as configured."""
     if not field_model:
         return list(candidates)
     preferred = [c for c in candidates if c[0] == field_model]
-    rest = [c for c in candidates if c[0] != field_model]
-    return preferred + rest
+    if preferred:
+        rest = [c for c in candidates if c[0] != field_model]
+        return preferred + rest
+    hosts = []
+    for _model, host, port in candidates:
+        if (host, port) not in hosts:
+            hosts.append((host, port))
+    return [(field_model, host, port) for host, port in hosts] + list(candidates)
 
 
 def _is_session_update(payload):
@@ -619,19 +637,115 @@ def _ws_connect_one(model, host, port, extra_headers, timeout):
     # reads this socket for the whole session and would die on a 2 s
     # silence. Clear it to blocking now that the handshake is done.
     sock.settimeout(None)
-    return WSConn(sock)
+    conn = WSConn(sock)
+    # Bytes past the header terminator in the handshake read are the
+    # start of the first frame (a fast upstream can coalesce them);
+    # keep them for read_frame instead of dropping them.
+    conn.buf += resp.split(b"\r\n\r\n", 1)[1]
+    return conn
 
 
-def ws_connect_upstream(extra_headers, field_model):
-    """Connect to the first reachable failover candidate (field's model
-    first, then the configured list). Returns (WSConn, model, host,
-    port). Raises ConnectionError if no server answers. The WS
-    handshake itself is the reachability check (no separate probe --
-    a probe would consume a connection on a single-accept server);
-    each candidate gets FAILOVER_TIMEOUT to connect, so a down fast
-    remote delays the fallback by at most ~2 s. If a candidate
-    connects but then fails the handshake (rare race), the next
-    candidate is tried."""
+class _ClientClosed(ConnectionError):
+    """The client went away while an upstream candidate was being
+    tried; the session is over, not a candidate failure."""
+
+
+def _await_session_created(conn, client, buffered):
+    """Wait for the upstream's session.created, the commit point for
+    a candidate. LocalAI accepts the WS handshake before validating
+    the model, so a missing model or bad pipeline errors after the
+    handshake; an error, close, or timeout before session.created
+    fails the candidate and the next one is tried. Client text frames
+    arriving during the wait are appended to buffered (they are
+    replayed to whichever candidate commits). Returns the upstream
+    text payloads received up to and including session.created."""
+    pending = []
+    deadline = time.time() + CREATED_TIMEOUT
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise ConnectionError(
+                f"no session.created within {CREATED_TIMEOUT:g}s")
+        # A WSConn can already hold frame bytes in its buffer (a recv
+        # overshot the previous frame), so buffered bytes count as
+        # readable without touching the socket.
+        up_ready = bool(conn.buf)
+        cl_ready = client is not None and bool(client.buf)
+        if not up_ready and not cl_ready:
+            socks = [conn.sock]
+            if client is not None:
+                socks.append(client.sock)
+            r, _, _ = select.select(socks, [], [], min(0.2, remaining))
+            up_ready = conn.sock in r
+            cl_ready = client is not None and client.sock in r
+            if not up_ready and not cl_ready:
+                continue
+        if up_ready:
+            conn.sock.settimeout(remaining)
+            try:
+                opcode, payload = conn.read_frame()
+            except (ConnectionError, OSError) as exc:
+                raise ConnectionError(f"upstream failed before "
+                                      f"session.created: {exc}")
+            finally:
+                conn.sock.settimeout(None)
+            if opcode == 8:
+                raise ConnectionError("upstream closed before session.created")
+            if opcode == 9:  # ping -> pong (masked: we are the client)
+                try:
+                    conn.send_frame(10, payload, mask=True)
+                except OSError:
+                    pass
+                continue
+            if opcode != 1:
+                continue
+            try:
+                msg = json.loads(payload.decode("utf-8"))
+            except Exception:
+                msg = None
+            mtype = msg.get("type") if isinstance(msg, dict) else None
+            if mtype == "error":
+                err = msg.get("error") or {}
+                code = err.get("code") if isinstance(err, dict) else None
+                raise ConnectionError(
+                    f"upstream error before session.created: {code}")
+            pending.append(payload)
+            if mtype == "session.created":
+                return pending
+            continue
+        if cl_ready:
+            client.sock.settimeout(2.0)
+            try:
+                opcode, payload = client.read_frame()
+            except (ConnectionError, OSError) as exc:
+                raise _ClientClosed(f"client closed during setup: {exc}")
+            finally:
+                client.sock.settimeout(None)
+            if opcode == 8:
+                raise _ClientClosed("client closed during setup")
+            if opcode == 9:  # ping -> pong (unmasked: we are the server)
+                try:
+                    client.send_frame(10, payload, mask=False)
+                except OSError:
+                    pass
+                continue
+            if opcode == 1 and buffered is not None:
+                buffered.append(payload)
+
+
+def ws_connect_upstream(extra_headers, field_model, client=None,
+                        buffered=None):
+    """Connect to the first failover candidate that reaches
+    session.created (field's model first, then the configured list).
+    Returns (WSConn, model, host, port, pending) where pending holds
+    the upstream payloads received up to session.created. Raises
+    ConnectionError if no candidate commits. The WS handshake is the
+    reachability check (no separate probe -- a probe would consume a
+    connection on a single-accept server); each candidate gets
+    FAILOVER_TIMEOUT to connect, so a down fast remote delays the
+    fallback by at most ~2 s. A candidate that handshakes but errors
+    or stalls before session.created (missing model, bad pipeline)
+    also falls through to the next candidate."""
     candidates = order_candidates(failover_candidates(), field_model)
     last_exc = None
     for model, host, port in candidates:
@@ -643,7 +757,17 @@ def ws_connect_upstream(extra_headers, field_model):
             last_exc = exc
             continue
         log(f"WS connected: {model}@{host}:{port}")
-        return conn, model, host, port
+        try:
+            pending = _await_session_created(conn, client, buffered)
+        except _ClientClosed:
+            conn.close()
+            raise
+        except ConnectionError as exc:
+            log(f"failover: {model}@{host}:{port} {exc}; trying next candidate")
+            last_exc = exc
+            conn.close()
+            continue
+        return conn, model, host, port, pending
     raise ConnectionError(f"no failover server reachable (last: {last_exc})")
 
 
@@ -693,8 +817,8 @@ def handle_ws(client_sock, headers):
     finally:
         client.sock.settimeout(None)
     try:
-        upstream, chosen_model, up_host, up_port = ws_connect_upstream(
-            headers, field_model)
+        upstream, chosen_model, up_host, up_port, pending = \
+            ws_connect_upstream(headers, field_model, client, buffered)
     except Exception as exc:
         log("WS setup failed:", exc)
         try:
@@ -822,6 +946,27 @@ def handle_ws(client_sock, headers):
 
     def upstream_observe(payload):
         log_upstream_event(payload, session_state)
+
+    # Deliver the upstream frames received while the candidate was
+    # committing (session.created, event-id stamped like any other
+    # upstream event) before the buffered client frames go up, so
+    # Dictate sees the session exist before its session.update lands.
+    for payload in pending:
+        upstream_observe(payload)
+        rewritten = upstream_rewrite(payload)
+        if rewritten is not None:
+            try:
+                with client_lock:
+                    client.send_frame(1, rewritten, mask=False)
+            except OSError:
+                log("WS setup failed: client closed while delivering "
+                    "session.created")
+                upstream.close()
+                try:
+                    client_sock.close()
+                except OSError:
+                    pass
+                return
 
     # Forward the frames buffered while waiting for session.update
     # (the session.update itself, rewritten to the chosen model, plus
