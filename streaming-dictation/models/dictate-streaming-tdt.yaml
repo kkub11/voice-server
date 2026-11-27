@@ -26,5 +26,10 @@ pipeline:
     transcription: true
   turn_detection:
     type: server_vad
+    # Wide VAD scan window: speech buffered during session warmup
+    # replays as a burst, and the default 1.5s scan clip plus the
+    # no-speech clear can cut its first word (2026-11-27). Scanning
+    # 30s costs a few ms of silero per tick.
+    vad_window_sec: 30
     # Silence window is the pipeline default; a mid-thought pause
     # only splits the text into turns, it never ends the dictation.

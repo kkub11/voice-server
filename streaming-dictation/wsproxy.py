@@ -143,6 +143,19 @@ FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))
 # the model, so a missing model errors after the handshake). Warmup
 # on a cold GPU model has taken ~14 s, hence the generous bound.
 CREATED_TIMEOUT = float(os.environ.get("WS_PROXY_CREATED_TIMEOUT", "30"))
+# Pump watchdog bounds (2026-11-27 wedge): a session whose upstream
+# stopped consuming left both pumps blocked indefinitely -- the
+# client pump stuck sending, the upstream pump stuck reading -- so
+# the session (and its recording, written only after the pumps join)
+# lingered 16 minutes past the dictation. A send blocked longer
+# than PUMP_SEND_TIMEOUT means the peer is not reading; no client
+# frame for PUMP_IDLE_TIMEOUT means the client vanished without
+# closing (Dictate sends audio appends continuously while recording,
+# so a live dictation never trips the idle bound). Either tears the
+# session down so Dictate falls back to batch and the recording
+# saves promptly.
+PUMP_SEND_TIMEOUT = float(os.environ.get("WS_PROXY_PUMP_SEND_TIMEOUT", "10"))
+PUMP_IDLE_TIMEOUT = float(os.environ.get("WS_PROXY_PUMP_IDLE_TIMEOUT", "180"))
 
 # EOU keeps the pre-keepalive stop behavior: its live word deltas
 # already renew Dictate's tail window while text is arriving, and
@@ -490,24 +503,51 @@ def rewrite_upstream_event(payload, state=None):
 
 # ------------------------------------------------------------------- proxy
 
+def pump_watchdog_reason(state, now, send_timeout=PUMP_SEND_TIMEOUT,
+                         idle_timeout=PUMP_IDLE_TIMEOUT):
+    """Why a session's pumps should be torn down, or None. Pure
+    decision over the per-pump activity stamps pump() maintains in
+    state: a send in flight longer than send_timeout (peer not
+    reading), or no client frame for idle_timeout (client gone
+    without closing)."""
+    for name in ("client->upstream", "upstream->client"):
+        since = state.get(f"{name}:sending_since")
+        if since is not None and now - since > send_timeout:
+            return f"{name} blocked sending for {now - since:.0f}s"
+    last_client = state.get("client->upstream:last_frame")
+    if last_client is not None and now - last_client > idle_timeout:
+        return f"no client frame for {now - last_client:.0f}s"
+    return None
+
+
 def pump(src, dst, name, mask_out, rewrite=None, observe=None,
-         send_lock=None):
+         send_lock=None, state=None):
     """Forward frames src -> dst until either side closes/errors.
     rewrite maps a text payload to a new payload, or None to drop the
     frame. observe sees every text payload (logging only). send_lock,
     when given, serializes all writes to dst (the close-on-commit
     shortcut sends a close frame to the client from another thread,
-    and two threads must never interleave bytes on one socket)."""
+    and two threads must never interleave bytes on one socket).
+    state, when given, collects the activity stamps the pump
+    watchdog reads (last frame read, send in flight since)."""
     def send(opcode, payload):
-        if send_lock is not None:
-            with send_lock:
+        if state is not None:
+            state[f"{name}:sending_since"] = time.time()
+        try:
+            if send_lock is not None:
+                with send_lock:
+                    dst.send_frame(opcode, payload, mask=mask_out)
+            else:
                 dst.send_frame(opcode, payload, mask=mask_out)
-        else:
-            dst.send_frame(opcode, payload, mask=mask_out)
+        finally:
+            if state is not None:
+                state[f"{name}:sending_since"] = None
 
     try:
         while True:
             opcode, payload = src.read_frame()
+            if state is not None:
+                state[f"{name}:last_frame"] = time.time()
             if opcode == 8:  # close: echo it onward and stop
                 try:
                     send(8, payload)
@@ -986,14 +1026,39 @@ def handle_ws(client_sock, headers):
                     pass
                 return
 
+    session_state["client->upstream:last_frame"] = time.time()
+    session_state["upstream->client:last_frame"] = time.time()
     t1 = threading.Thread(target=pump, args=(client, upstream, "client->upstream",
                                              True, client_rewrite,
-                                             client_observe), daemon=True)
+                                             client_observe, None,
+                                             session_state), daemon=True)
     t2 = threading.Thread(target=pump, args=(upstream, client, "upstream->client",
                                              False, upstream_rewrite,
-                                             upstream_observe, client_lock), daemon=True)
+                                             upstream_observe, client_lock,
+                                             session_state), daemon=True)
+
+    def pump_watchdog():
+        # Neither pump can notice a wedged pair on its own (one
+        # blocked sending, the other blocked reading), so a third
+        # thread watches their activity stamps and shuts both
+        # sockets down when pump_watchdog_reason fires; the pumps'
+        # own finally blocks then finish the teardown and the
+        # recording saves.
+        while t1.is_alive() or t2.is_alive():
+            reason = pump_watchdog_reason(session_state, time.time())
+            if reason is not None:
+                log(f"PUMP TIMEOUT: {reason}; tearing down session")
+                for c in (client, upstream):
+                    try:
+                        c.sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                return
+            time.sleep(0.5)
+
     t1.start()
     t2.start()
+    threading.Thread(target=pump_watchdog, daemon=True).start()
     t1.join()
     t2.join()
     if rec_pcm:

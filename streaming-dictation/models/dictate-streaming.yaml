@@ -34,3 +34,7 @@ pipeline:
     type: semantic_vad
     eagerness: high
     retranscribe: false
+    # Wide VAD scan window: speech buffered during session warmup
+    # replays as a burst, and the default scan clip plus the
+    # no-speech clear can cut its first word (2026-11-27).
+    vad_window_sec: 30

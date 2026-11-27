@@ -281,6 +281,23 @@ def main():
         check("non-empty transcription model preserved",
               _kept["session"]["audio"]["input"]["transcription"]["model"] == "dictate-streaming-nemotron")
 
+        # Pump watchdog (2026-11-27 wedge): a send in flight past
+        # the bound, or a client silent past the idle bound, tears
+        # the session down; healthy stamps do not.
+        _wd = wsproxy.pump_watchdog_reason
+        _now = 1000.0
+        check("watchdog quiet on healthy pumps",
+              _wd({"client->upstream:last_frame": _now - 5,
+                   "client->upstream:sending_since": None}, _now) is None)
+        check("watchdog fires on blocked send",
+              _wd({"client->upstream:last_frame": _now - 5,
+                   "client->upstream:sending_since": _now - 11}, _now) is not None)
+        check("watchdog fires on silent client",
+              _wd({"client->upstream:last_frame": _now - 181}, _now) is not None)
+        check("watchdog ignores upstream silence while client sends",
+              _wd({"client->upstream:last_frame": _now - 5,
+                   "upstream->client:last_frame": _now - 999}, _now) is None)
+
         print("\nALL PASS" if ok else "\nSOME FAILED")
         return 0 if ok else 1
     finally:
