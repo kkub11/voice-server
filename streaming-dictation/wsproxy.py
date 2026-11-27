@@ -127,6 +127,13 @@ DEFAULT_FAILOVER = (
 )
 FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))
 
+# EOU keeps the pre-keepalive stop behavior: its live word deltas
+# already renew Dictate's tail window while text is arriving, and
+# when they stop Dictate commits the live transcript on its own
+# silence outcome instead of being held to the cap, where batch
+# fallback would redo the dictation.
+TAIL_KEEPALIVE_EXEMPT_MODELS = {"dictate-streaming"}
+
 
 def parse_failover(raw):
     """Parse a WS_PROXY_FAILOVER value into [(model, host, port)] in
@@ -778,6 +785,9 @@ def handle_ws(client_sock, headers):
                 # 50 ms lets the commit itself reach the upstream
                 # first; the close then ends Dictate's tail wait.
                 threading.Timer(0.05, close_session_at_once).start()
+            elif chosen_model in TAIL_KEEPALIVE_EXEMPT_MODELS:
+                log("COMMIT with turn still open: EOU keeps Dictate's "
+                    "own tail wait (no keepalive)")
             else:
                 log("COMMIT with turn still open: tail keepalive on "
                     "(last words still decoding)")

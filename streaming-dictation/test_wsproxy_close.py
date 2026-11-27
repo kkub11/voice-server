@@ -26,8 +26,12 @@ Three scenarios, each a fresh proxy + fake upstream on its own ports:
     the client must receive empty-delta keepalives (they renew
     Dictate's 1.2 s tail idle window while the last turn decodes)
     and no close frame.
+ 6. eou-no-keepalive: the same open-turn stop on the EOU pipeline
+    (`dictate-streaming`) must receive no keepalive, preserving
+    Dictate's own tail-wait behavior for EOU.
 """
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -79,7 +83,8 @@ def read_head(sock):
     return lines[0], headers
 
 
-def run_scenario(name, up_port, proxy_port, scenario):
+def run_scenario(name, up_port, proxy_port, scenario,
+                 model="dictate-streaming-nemotron"):
     """Run one scenario. Returns (close_seen, commit_reached_upstream,
     close_seen_second_commit) -- the third is only used by the
     late-completed scenario, which sends a second commit after turn 2
@@ -185,7 +190,7 @@ def run_scenario(name, up_port, proxy_port, scenario):
 
     threading.Thread(target=upstream_server, daemon=True).start()
     env = dict(os.environ, WS_PROXY_LISTEN_PORT=str(proxy_port),
-               WS_PROXY_FAILOVER=f"dictate-streaming-nemotron@{HOST}:{up_port}")
+               WS_PROXY_FAILOVER=f"{model}@{HOST}:{up_port}")
     proc = subprocess.Popen(
         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                       "wsproxy.py")],
@@ -218,10 +223,12 @@ def run_scenario(name, up_port, proxy_port, scenario):
         assert resp.startswith(b"HTTP/1.1 101"), f"[{name}] handshake failed: {resp!r}"
         ws = WSConn(sock)
         sock.settimeout(10)
-        ws.send_frame(1, json.dumps(SESSION_UPDATE).encode(), mask=True)
+        session_update = copy.deepcopy(SESSION_UPDATE)
+        session_update["session"]["audio"]["input"]["transcription"]["model"] = model
+        ws.send_frame(1, json.dumps(session_update).encode(), mask=True)
         # wait for the upstream events to flow back (delta/completed)
         expect_frames = {"close": 4, "new-turn": 5, "open": 1,
-                         "keepalive": 1,
+                         "keepalive": 1, "eou-no-keepalive": 1,
                          "late-completed": 6}[scenario]
         deadline = time.time() + 5
         got = 0
@@ -319,6 +326,12 @@ def main():
         "keepalive", 18101, 18102, "keepalive")
     check("keepalive deltas sent while turn open", keepalive_seen)
     check("no close during keepalive", not close_seen)
+
+    close_seen, _, _, keepalive_seen = run_scenario(
+        "eou-no-keepalive", 18103, 18104, "eou-no-keepalive",
+        model="dictate-streaming")
+    check("no keepalive deltas for EOU", not keepalive_seen)
+    check("no close for EOU open turn", not close_seen)
 
     print("\nALL PASS" if ok else "\nSOME FAILED")
     return 0 if ok else 1
