@@ -49,7 +49,7 @@ help: ## Show this help (default target).
 	@echo "Second server (fast remote, GPU) — up-gpu/models-gpu run on the GPU machine:"
 	@echo "  up-gpu        Start LocalAI with the GPU image (:8081, same container name)"
 	@echo "  down-gpu      Stop the GPU LocalAI"
-	@echo "  models-gpu    Install Whisper large-v3 on the GPU box (after 'make models')"
+	@echo "  models-gpu    Install GPU models (Whisper + TDT) on the GPU box (after 'make models')"
 	@echo "  proxy-failover Restart wsproxy on :8084 (same one candidate list)"
 	@echo ""
 	@echo "Day to day:"
@@ -193,8 +193,8 @@ down-gpu: ## Stop the GPU LocalAI. Run ON the GPU machine.
 # nvidia-cuda-12) reports "backend not found". The chown matters too:
 # installs run as root via docker exec and create root-only dirs the
 # server user cannot read.
-models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must be up). Run ON the GPU machine.
-	@echo "Installing Whisper large-v3 on the GPU box..."
+models-gpu: ## Install GPU models (Whisper + TDT) on the GPU box (container 'localai' must be up). Run ON the GPU machine.
+	@echo "Installing GPU models (Whisper + TDT) on the GPU box..."
 	@docker exec localai sh -c 'rm -rf /backends/whisper /backends/cpu-whisper /backends/llama-cpp /backends/cpu-llama-cpp /backends/parakeet-cpp /backends/cpu-parakeet-cpp /backends/nemo-speech-cpp /backends/cpu-nemo-speech-cpp'
 	@docker exec localai /local-ai backends install whisper
 	@docker exec localai /local-ai backends install llama-cpp
@@ -202,8 +202,10 @@ models-gpu: ## Install Whisper large-v3 on the GPU box (container 'localai' must
 	@docker exec localai /local-ai backends install nemo-speech-cpp
 	@docker exec localai chown -R localai:localai /backends
 	@docker exec localai /local-ai models install whisper-large
+	@docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v2
+	@docker exec localai /local-ai models install parakeet-cpp-tdt-0.6b-v3
 	@echo ""
-	@echo "Whisper done. The other pipelines come from 'make models'."
+	@echo "GPU models done. The other pipelines come from 'make models'."
 	@echo "Nemotron needs the two manual GGUF downloads into"
 	@echo "$(STREAMING_DIR)/models/ (see 'make models' output) plus:"
 	@echo "  docker exec localai /local-ai backends install nemo-speech-cpp"

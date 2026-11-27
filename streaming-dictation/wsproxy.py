@@ -119,10 +119,16 @@ LISTEN_PORT = int(os.environ.get("WS_PROXY_LISTEN_PORT", "8084"))
 # "model@host:port" (port optional, default 8081), checked in order;
 # a candidate is skipped when its server is down. The Dictate
 # Real-time model field is still the first choice: matching entries
-# are moved first, then the rest of the list is tried in order.
+# are moved first, then the rest of the list is tried in order. The
+# same model may appear on more than one host; matching entries keep
+# their list order, so the GPU box is tried before the local server.
 DEFAULT_FAILOVER = (
     "dictate-streaming-whisper@192.168.1.236:8081, "
     "dictate-streaming-nemotron@192.168.1.236:8081, "
+    "dictate-streaming-tdt-v2@192.168.1.236:8081, "
+    "dictate-streaming-tdt@192.168.1.236:8081, "
+    "dictate-streaming-tdt-v2@127.0.0.1:8081, "
+    "dictate-streaming-tdt@127.0.0.1:8081, "
     "dictate-streaming@127.0.0.1:8081"
 )
 FAILOVER_TIMEOUT = float(os.environ.get("WS_PROXY_FAILOVER_TIMEOUT", "2"))

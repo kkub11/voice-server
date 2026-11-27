@@ -247,6 +247,12 @@ def main():
            ("eou", HOST, MAIN_PORT)])
     check("order_candidates leaves a blank field alone",
           wsproxy.order_candidates(cands, "") == cands)
+    dup = [("whisper", HOST, FAST_PORT), ("tdt", HOST, FAST_PORT),
+           ("tdt", HOST, MAIN_PORT), ("eou", HOST, MAIN_PORT)]
+    check("order_candidates keeps duplicate-model hosts in list order",
+          wsproxy.order_candidates(dup, "tdt") ==
+          [("tdt", HOST, FAST_PORT), ("tdt", HOST, MAIN_PORT),
+           ("whisper", HOST, FAST_PORT), ("eou", HOST, MAIN_PORT)])
 
     # --- integration: failover list, fast remote down ------------------
     # Only the MAIN server is up (fast remote port is dead). The list
