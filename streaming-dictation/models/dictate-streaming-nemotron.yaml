@@ -6,20 +6,22 @@
 # capitalization"; Nemotron "supports punctuation and capitalization"),
 # and is more accurate (6.93% WER at 1.12 s lookahead vs 9.30%).
 #
-# Two behaviour differences vs the EOU pipeline, both verified in
-# LocalAI's source/docs (2026-11-16):
+# Two behaviour differences vs the EOU pipeline:
 # 1. No EOU token: Nemotron does not predict end-of-utterance, so
-#    semantic_vad commits a turn on the eagerness silence window
-#    instead (2 s on high). Dictate still holds the dictation open
-#    until YOU stop it — silence never ends it; the turn commit only
+#    semantic_vad could only commit a turn on its eagerness silence
+#    timeout (2 s on high, the fastest setting) — measured ~2.4 s of
+#    lag after speech ended. server_vad commits after its default
+#    500 ms silence instead (switched 2026-11-26), so text lands
+#    about a second sooner. Pauses longer than ~0.5 s split the
+#    dictation into turns; Dictate still holds the dictation open
+#    until YOU stop it — silence never ends it; a turn commit only
 #    finalizes the text of that chunk.
-# 2. Deltas arrive per FINALIZED utterance, not word-by-word
-#    mid-utterance: the nemo-speech-cpp backend deliberately drops
-#    interim hypotheses (its doc: forwarding interims would assemble
-#    "he", "hell", "hello", "Hello." into "hehellhelloHello."). So the
-#    visible text lands as punctuated sentences at utterance ends
-#    rather than as a live word stream. For dictation that is arguably
-#    the better feel — and the landed text is punctuated.
+# 2. Text arrives per VAD-committed turn, not word-by-word
+#    mid-utterance: server_vad transcribes each committed turn as a
+#    whole, and the nemo-speech-cpp backend drops interim hypotheses
+#    anyway (forwarding them would assemble "he", "hell", "hello",
+#    "Hello." into "hehellhelloHello."). So the visible text lands
+#    at pauses rather than as a live word stream.
 # The LLM (Qwen3 0.6B) is in the pipeline because LocalAI's examples
 # show all four stages; it is loaded but idle in a transcription-only
 # session. There is deliberately NO tts stage (qwen3-tts-cpp-customvoice
@@ -33,6 +35,6 @@ pipeline:
   streaming:
     transcription: true
   turn_detection:
-    type: semantic_vad
-    eagerness: high
-    retranscribe: false
+    type: server_vad
+    # Silence window is the server_vad default (500 ms); the
+    # pipeline schema has no field to tune it.

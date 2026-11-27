@@ -312,7 +312,7 @@ def rewrite_session_update(payload, chosen_model=None):
             and "turn_detection" in audio_input:
         del audio_input["turn_detection"]
         log("REWRITE session.update: stripped turn_detection:null "
-            "(server keeps semantic_vad)")
+            "(server keeps its pipeline turn detection)")
         changed = True
     try:
         tr = audio_input.get("transcription")
